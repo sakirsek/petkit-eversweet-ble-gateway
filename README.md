@@ -97,8 +97,23 @@ And escalation, which says it will then stop talking:
 >
 > *I will not write about this again.*
 
-`python preview_messages.py` sends one of every message type to your own phone,
-so you can see the real thing before committing to any of this.
+### Try it with no fountain, no phone and no bot
+
+```bash
+make -C core && python tools/demo.py
+```
+
+That replays the six-hour capture in `data/` through the real core and prints
+what it would have sent. It needs no configuration and no hardware.
+
+It is also a check on the project's own claims. The capture holds raw detection
+edges; the demo merges them with the rule reverse-engineered from the vendor
+app, and gets **five visits with a longest gap of 3 hr 40 min**, which is what
+the app's own history screen showed for that night and the number quoted further
+down this README. Nothing is fitted to make the demo look good.
+
+Once you do have a bot, `python preview_messages.py` sends one of every message
+type to your own phone.
 
 ---
 
@@ -156,10 +171,19 @@ recorded days through the core.
 
 ### 3. Move it to the board
 
+**There is nothing to wire.** No soldering, no breadboard, no sensors, no
+resistors. An ESP32-C3 SuperMini and a USB-C cable is the entire bill of
+materials. Flash it, then plug it into any USB charger within Bluetooth range
+of the fountain and leave it there.
+
 ```bash
 python esp32/tools/gen_secrets.py   # config.json -> esp32/main/secrets.h
 cd esp32 && idf.py -p COM3 flash
 ```
+
+Use a cable that carries data. A charge-only cable powers the board perfectly
+well but will not show up as a serial port, which looks exactly like a dead
+board. This wasted an hour here.
 
 Only `petkit_pc.py` is replaced on the board (NimBLE + `esp_http_client`).
 `core/` ships unchanged, which is why all the logic, including the message
@@ -221,6 +245,7 @@ petkit_pc.py             PC driver: BLE (bleak) + Telegram + clock + logging
 test_core.py             112 regression tests, all from live measurements
 preview_messages.py      Sends every message type to Telegram for review
 replay_logs.py           Replays a recorded run through the core
+tools/demo.py            Replays data/ through the core. No hardware needed
 tools/get_secret.py      Recovers your auth secret from the PetKit app's logs
 tools/check_leaks.py     Refuses to let your secrets reach GitHub. Run it before
                          every push; it has caught two real leaks already
