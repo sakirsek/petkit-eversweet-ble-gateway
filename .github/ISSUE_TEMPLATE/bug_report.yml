@@ -1,0 +1,65 @@
+name: Bug report
+description: Something in the gateway, the core or the firmware behaves wrongly.
+title: "[bug] "
+labels: ["bug"]
+
+body:
+  - type: markdown
+    attributes:
+      value: |
+        **Never paste your device secret, bot token or Wi-Fi password.** Logs
+        from this project do not contain them, but check anything you paste.
+
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened, and what you expected instead
+    validations:
+      required: true
+
+  - type: dropdown
+    id: where
+    attributes:
+      label: Where
+      options:
+        - PC driver (petkit_pc.py)
+        - ESP32 firmware
+        - The core / test suite
+        - tools/get_secret.py
+        - Documentation
+    validations:
+      required: true
+
+  - type: input
+    id: platform
+    attributes:
+      label: OS, or board and ESP-IDF version
+      placeholder: Ubuntu 24.04 / ESP32-C3 SuperMini with ESP-IDF v5.5.5
+    validations:
+      required: true
+
+  - type: input
+    id: fountain
+    attributes:
+      label: Fountain model
+      placeholder: Eversweet Max 2 UVC (CTW3UV)
+    validations:
+      required: false
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant output
+      render: text
+    validations:
+      required: false
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Before submitting
+      options:
+        - label: "`python test_core.py` passes on my machine"
+          required: false
+        - label: I checked that what I pasted contains no secret or token
+          required: true

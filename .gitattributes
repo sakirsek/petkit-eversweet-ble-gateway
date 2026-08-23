@@ -1,0 +1,11 @@
+# Normalise line endings so contributors on different platforms do not fight.
+* text=auto eol=lf
+
+# Windows-only scripts want CRLF or cmd.exe can misparse them.
+*.bat text eol=crlf
+
+# Never touch these.
+*.gz  binary
+*.png binary
+*.jpg binary
+*.bin binary

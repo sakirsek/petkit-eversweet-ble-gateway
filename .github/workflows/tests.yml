@@ -1,0 +1,51 @@
+name: tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  test:
+    name: core + tests (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      # The core is plain C99 with no dependencies. It has to build with the
+      # platform's own compiler, which is the point of having it in C at all:
+      # the same file also compiles into the ESP32 firmware unchanged.
+      - name: Build the core (Linux, macOS)
+        if: runner.os != 'Windows'
+        run: make -C core
+
+      - name: Build the core (Windows)
+        if: runner.os == 'Windows'
+        shell: cmd
+        run: core\build.bat
+
+      # No config.json here, and there must never need to be: the suite runs
+      # entirely on values captured from a real device and embedded in the file.
+      - name: Run the test suite
+        run: python test_core.py
+
+  style:
+    name: prose rules
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: No em dashes, no non-English text
+        run: python tools/check_style.py

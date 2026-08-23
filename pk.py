@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""ctypes bindings for core/petkit_core.dll.
+"""ctypes bindings for the compiled core (.dll, .so or .dylib).
 
 All protocol, alarm and message logic lives in C. Python is only the
 transport here, which is exactly the split that lets the same core run on the
@@ -8,11 +8,23 @@ ESP32-C3: this file gets replaced by NimBLE + esp_http_client, the C core
 does not change at all.
 """
 import ctypes as C
+import sys
 from pathlib import Path
 
-_DLL = Path(__file__).resolve().parent / "core" / "petkit_core.dll"
-if not _DLL.exists():
-    raise SystemExit("core/petkit_core.dll is missing - run core\\build.bat first")
+_CORE = Path(__file__).resolve().parent / "core"
+
+if sys.platform == "win32":
+    _NAMES, _BUILD = ("petkit_core.dll",), "core\\build.bat"
+elif sys.platform == "darwin":
+    _NAMES, _BUILD = ("libpetkit_core.dylib", "petkit_core.dylib"), "make -C core"
+else:
+    _NAMES, _BUILD = ("libpetkit_core.so", "petkit_core.so"), "make -C core"
+
+_DLL = next((p for p in (_CORE / n for n in _NAMES) if p.exists()), None)
+if _DLL is None:
+    raise SystemExit(
+        "The core library is missing. Build it with:\n    %s\n"
+        "Looked for: %s" % (_BUILD, ", ".join("core/" + n for n in _NAMES)))
 
 
 class Cfg(C.Structure):

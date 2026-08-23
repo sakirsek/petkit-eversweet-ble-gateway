@@ -1,0 +1,4 @@
+# Runtime dependency of the PC driver (petkit_pc.py) only.
+# The test suite, replay_logs.py and the core itself need nothing but the
+# standard library plus the compiled core (see core/Makefile or core/build.bat).
+bleak>=0.21

@@ -1,5 +1,7 @@
 # PetKit Eversweet Max 2 UVC: local BLE → Telegram gateway
 
+[![tests](https://github.com/sakirsek/petkit-eversweet-ble-gateway/actions/workflows/tests.yml/badge.svg)](https://github.com/sakirsek/petkit-eversweet-ble-gateway/actions/workflows/tests.yml)
+
 Monitors a PetKit water fountain **entirely locally**, with no PetKit cloud, no
 account and no WiFi relay device, and sends Telegram alerts when something is
 worth your attention.
@@ -7,8 +9,8 @@ worth your attention.
 The fountain is BLE-only. PetKit's architecture expects a second, WiFi-capable
 PetKit device to act as a relay. This project replaces that relay with a €4
 **ESP32-C3 SuperMini** running 24/7. The Python driver in this repo is the
-prototype the firmware logic was validated on, and still works if you would
-rather run it on a PC or a Pi.
+prototype the firmware logic was validated on, and it also runs as the gateway
+itself on any machine with Bluetooth: Windows, Linux, macOS or a Raspberry Pi.
 
 > **Unofficial.** Not affiliated with, endorsed by, or connected to PetKit. All
 > trademarks belong to their owners. This talks to a device you own, over your
@@ -54,6 +56,52 @@ signal is the *absence* of drinking. A cat that stops drinking is an early sign
 of kidney or urinary trouble. Reporting every individual visit produces alert
 fatigue and buries the one message that matters.
 
+### What the messages actually look like
+
+The daily summary, with the visit list collapsed behind an expandable quote so
+the message stays short without losing anything:
+
+> 📊 **Daily summary · 19.08.2026**
+>
+> 🐱 **10 drinks** · 15 min 44 sec total
+> Longest drink **3 min 40 sec** (01:29) · longest gap **3 hr 40 min**
+>
+> > 01:00   43 sec
+> > 01:29   3 min 40 sec
+> > 01:59   1 min 8 sec
+> > *... 7 more, tap to expand*
+>
+> 💧 **Pump** ran 14 hr 3 min
+> 🔋 **Battery** 100% (4214 mV)
+> 🧹 **Filter** 98%
+> ⚙️ Continuous mode · adapter
+
+The alarm that the whole project exists for:
+
+> ⚠️ **Your cat has not drunk for 8 hours**
+> Last drink **10:23** · 1 min 7 sec
+>
+> > **Fountain:** on · pump running
+> > **Water:** present
+> > **Filter:** 98% · **Battery:** 100%
+> >
+> > Nothing is wrong with the device. That is why I am telling you.
+
+And escalation, which says it will then stop talking:
+
+> 🔴 **Your cat has not drunk for 12 hours**
+> Last drink **10:23** · 1 min 7 sec
+>
+> > The device is still healthy. This gap is unusual for this cat. The longest
+> > normal gap measured is **6 hr 56 min**.
+>
+> *I will not write about this again.*
+
+`python preview_messages.py` sends one of every message type to your own phone,
+so you can see the real thing before committing to any of this.
+
+---
+
 The threshold came from measurement, not intuition, and it has already been
 re-tuned once. On 19 August the cat's longest normal gap was 3 h 40 min, so the
 first setting was 6 hours. On 20 August the cat slept through the afternoon and
@@ -79,12 +127,28 @@ covers every fallback.
 
 ### 2. Run it on a PC first
 
+Build the core first. It is plain C99 with no dependencies, and the same file
+compiles into the ESP32 firmware unchanged.
+
 ```bash
-core\build.bat                # build the core as a DLL (VS 2022 Build Tools)
-python test_core.py           # 112 regression tests, all must pass
-python petkit_pc.py --once    # single poll, print result, exit
-python petkit_pc.py           # run the gateway
+make -C core                  # Linux, macOS, Raspberry Pi
 ```
+
+```bat
+core\build.bat                REM Windows; finds MSVC by itself via vswhere
+```
+
+Then:
+
+```bash
+pip install -r requirements.txt   # bleak, for the BLE transport
+python test_core.py               # 112 regression tests, all must pass
+python petkit_pc.py --once        # single poll, print result, exit
+python petkit_pc.py               # run the gateway
+```
+
+`test_core.py` needs no configuration and no hardware: every expected value in
+it was captured from a real device. If it passes, your build is good.
 
 `python preview_messages.py` sends one of every message type to your phone so
 you can see what you are signing up for. `python replay_logs.py` re-runs
@@ -150,7 +214,8 @@ keep both of those rules.
 core/petkit_core.{h,c}   Pure C99 core, ships to the board as-is
                          protocol, decoding, alarm rules, message text
                          no malloc, no files, no sockets, no time()
-core/build.bat           Builds the core as a DLL for the PC driver
+core/Makefile            Builds the core on Linux, macOS and the Pi
+core/build.bat           Builds the core on Windows (MSVC, found via vswhere)
 pk.py                    ctypes bindings (pk_t kept opaque via pk_sizeof)
 petkit_pc.py             PC driver: BLE (bleak) + Telegram + clock + logging
 test_core.py             112 regression tests, all from live measurements
@@ -159,6 +224,10 @@ replay_logs.py           Replays a recorded run through the core
 tools/get_secret.py      Recovers your auth secret from the PetKit app's logs
 tools/check_leaks.py     Refuses to let your secrets reach GitHub. Run it before
                          every push; it has caught two real leaks already
+tools/check_style.py     Enforces the prose rules below. Runs in CI
+requirements.txt         bleak, needed by the PC driver only
+.github/workflows/       CI: builds the core and runs the suite on Linux,
+                         macOS and Windows
 esp32/                   ESP-IDF v5.5 firmware (NimBLE)
 docs/protocol.md         The reverse-engineered BLE protocol
 docs/secret.md           How to obtain your fountain's auth secret
@@ -234,8 +303,9 @@ Measured on a real phone; regressing these makes the messages worse.
 - **One fact per line in the report body.** Battery and Filter shared a line
   once and wrapped mid-value on a phone, splitting "Filter 96%" across two lines.
 - **No em dashes.** Use `·` as a separator, a colon, or a full stop. Test 17
-  fails if any generated message contains one. The same rule applies to this
-  repo's own prose: there are no em dashes anywhere in it, on purpose.
+  fails if any generated message contains one, and `tools/check_style.py`
+  fails in CI if one appears anywhere else in the repository, along with any
+  non-English text. Both rules are deliberate and both are enforced.
 
 ---
 
