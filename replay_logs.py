@@ -6,7 +6,7 @@ The strongest check available short of another overnight run: it drives the
 real core with the real polls, in the real order, at the real times of a run
 that already happened, and prints every message the core would send.
 
-Use it after changing anything in core/ — a behaviour regression shows up as a
+Use it after changing anything in core/. A behaviour regression shows up as a
 message that appears, disappears, or changes wording against a day you already
 know the truth about. This is how the missing 19 Aug daily report was
 confirmed fixed.
@@ -111,7 +111,7 @@ def main():
     for human, m in sent:
         print("\n[%s]\n%s" % (human, m))
     if not sent:
-        print("\n(none — silence is the correct output for a healthy run "
+        print("\n(none, silence is the correct output for a healthy run "
               "that does not cross midnight)")
     return 0
 

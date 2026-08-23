@@ -1,7 +1,7 @@
-# PetKit Eversweet Max 2 UVC — local BLE → Telegram gateway
+# PetKit Eversweet Max 2 UVC: local BLE → Telegram gateway
 
-Monitors a PetKit water fountain **entirely locally** — no PetKit cloud, no
-account, no WiFi relay device — and sends Telegram alerts when something is
+Monitors a PetKit water fountain **entirely locally**, with no PetKit cloud, no
+account and no WiFi relay device, and sends Telegram alerts when something is
 worth your attention.
 
 The fountain is BLE-only. PetKit's architecture expects a second, WiFi-capable
@@ -27,7 +27,7 @@ Read this part. It will save you the disappointment.
 - **Tested on exactly one model**, the Eversweet Max 2 UVC (`CTW3UV`), against
   one fountain. Other PetKit fountains use related but different frames.
 - **The fountain accepts one BLE connection at a time**, and while the PetKit
-  app is connected it stops advertising entirely — the gateway cannot see it at
+  app is connected it stops advertising entirely, so the gateway cannot see it at
   all. In practice this is fine (the gateway holds the radio for a few seconds
   every five minutes) but you cannot sit in the app and expect polling to work.
 - **This project is read-only by design.** It never changes a setting, never
@@ -39,7 +39,7 @@ Read this part. It will save you the disappointment.
 ## What it does
 
 Every 5 minutes it connects, reads the state, pulls the fountain's **own drink
-history**, disconnects — and **stays silent**. It sends a message only for:
+history**, disconnects, and then **stays silent**. It sends a message only for:
 
 | Trigger | Rule |
 |---|---|
@@ -50,14 +50,14 @@ history**, disconnects — and **stays silent**. It sends a message only for:
 | 📊 Daily summary | just after midnight: visit list + system health receipt |
 
 **There is deliberately no routine "the cat drank" message.** The valuable
-signal is the *absence* of drinking — a cat that stops drinking is an early sign
+signal is the *absence* of drinking. A cat that stops drinking is an early sign
 of kidney or urinary trouble. Reporting every individual visit produces alert
 fatigue and buries the one message that matters.
 
 The threshold came from measurement, not intuition, and it has already been
 re-tuned once. On 19 August the cat's longest normal gap was 3 h 40 min, so the
 first setting was 6 hours. On 20 August the cat slept through the afternoon and
-went **6 h 56 min** without drinking, in perfect health — a 6-hour threshold
+went **6 h 56 min** without drinking, in perfect health. A 6-hour threshold
 would have fired a false alarm. It is now 8 hours, with `normal_gap_minutes` at
 416. The daily report prints that day's longest gap, which is the only reason
 the re-tuning was possible. **Expect to tune this for your own cat.**
@@ -98,7 +98,7 @@ cd esp32 && idf.py -p COM3 flash
 ```
 
 Only `petkit_pc.py` is replaced on the board (NimBLE + `esp_http_client`).
-`core/` ships unchanged — which is why all the logic, including the message
+`core/` ships unchanged, which is why all the logic, including the message
 wording, lives there rather than in Python.
 
 ### Configuration
@@ -107,20 +107,20 @@ Copy `config.example.json` to `config.json` and fill it in.
 
 | Key | Default | Notes |
 |---|---|---|
-| `mac` | — | fountain BLE address |
-| `secret` | — | 6-byte device secret as 12 hex chars (**sensitive**) |
-| `telegram_token` / `telegram_chat_id` | — | bot credentials (**sensitive**) |
-| `wifi_ssid` / `wifi_password` | — | **board only** (**sensitive**). The PC driver ignores them; `esp32/tools/gen_secrets.py` reads them so credentials live in exactly one file. A non-ASCII SSID must reach the firmware as octal escapes, not raw bytes — see that script |
+| `mac` | n/a | fountain BLE address |
+| `secret` | n/a | 6-byte device secret as 12 hex chars (**sensitive**) |
+| `telegram_token` / `telegram_chat_id` | n/a | bot credentials (**sensitive**) |
+| `wifi_ssid` / `wifi_password` | n/a | **board only** (**sensitive**). The PC driver ignores them; `esp32/tools/gen_secrets.py` reads them so credentials live in exactly one file. A non-ASCII SSID must reach the firmware as octal escapes, not raw bytes. See that script |
 | `poll_minutes` | 5 | |
 | `thirst_hours` | 8 | raised from 6 after a healthy 6 h 56 min gap |
 | `thirst_escalate_hours` | 12 | |
 | `normal_gap_minutes` | 416 | longest normal gap measured, quoted in the escalation |
-| `report_time` | — | **inert.** Kept only so the config layout stays valid. See below |
+| `report_time` | n/a | **inert.** Kept only so the config layout stays valid. See below |
 | `report_settle_minutes` | 3 | how long past midnight to wait before closing the day |
-| `timezone_offset_hours` | 3 | **fixed** offset the core uses for every local time. Not read from the OS — the core never calls `localtime()`, so the PC and the board agree exactly. A DST country would need real zone handling |
+| `timezone_offset_hours` | 3 | **fixed** offset the core uses for every local time. Not read from the OS; the core never calls `localtime()`, so the PC and the board agree exactly. A DST country would need real zone handling |
 
 `config.json` and `esp32/main/secrets.h` are gitignored. Keep it that way, and
-if you fork this repo, run `python tools/check_leaks.py` before every push — it
+if you fork this repo, run `python tools/check_leaks.py` before every push. It
 reads your real values and refuses if any of them appear in what git is about to
 publish. It has caught two genuine leaks in this repo already, including one in
 a template file.
@@ -147,17 +147,17 @@ keep both of those rules.
 ## Layout
 
 ```
-core/petkit_core.{h,c}   Pure C99 core — THE FILE THAT SHIPS TO THE BOARD
+core/petkit_core.{h,c}   Pure C99 core, ships to the board as-is
                          protocol, decoding, alarm rules, message text
                          no malloc, no files, no sockets, no time()
 core/build.bat           Builds the core as a DLL for the PC driver
 pk.py                    ctypes bindings (pk_t kept opaque via pk_sizeof)
-petkit_pc.py             PC driver — BLE (bleak) + Telegram + clock + logging
+petkit_pc.py             PC driver: BLE (bleak) + Telegram + clock + logging
 test_core.py             112 regression tests, all from live measurements
 preview_messages.py      Sends every message type to Telegram for review
 replay_logs.py           Replays a recorded run through the core
 tools/get_secret.py      Recovers your auth secret from the PetKit app's logs
-tools/check_leaks.py     Refuses to let your secrets reach GitHub — run before
+tools/check_leaks.py     Refuses to let your secrets reach GitHub. Run it before
                          every push; it has caught two real leaks already
 esp32/                   ESP-IDF v5.5 firmware (NimBLE)
 docs/protocol.md         The reverse-engineered BLE protocol
@@ -167,7 +167,7 @@ data/                    Overnight baseline capture used to pick the thresholds
 
 **Language choice:** ESP-IDF + C with **NimBLE** (roughly 40 KB less RAM than
 Bluedroid). The 5-minute duty cycle means the BLE link is always closed before
-the WiFi/TLS stack opens, so the two never contend for heap — the reason this
+the WiFi/TLS stack opens, so the two never contend for heap, the reason this
 fits comfortably on a C3.
 
 ---
@@ -188,7 +188,7 @@ before it was found. `report_time` and `CONFIG_REPORT_HOUR`/`_MIN` are inert.
 **The day is not closed until `report_settle_minutes` past midnight.** The
 fountain writes each record about 40 seconds after the visit ends, so a drink at
 23:59 is not readable until just after midnight. Closing the day at the first
-tick after midnight would leave that drink in no report at all — it belongs to
+tick after midnight would leave that drink in no report at all: it belongs to
 the finished day, whose summary has already gone out.
 
 **⚠️ Never add a second way to close the day.** There used to be one, and it
@@ -203,10 +203,10 @@ multiple of the poll interval and both drivers sleep the remainder, so a run
 holds its poll phase for its whole life: **one gateway start in five lands in
 that minute and then loses the end of every single day until something restarts
 it.** It surfaced because the board's first self-sent report arrived at 23:59
-instead of just after midnight — the only visible symptom, and only visible to
+instead of just after midnight. That was the only visible symptom, visible only to
 someone who knew the report was supposed to be late. The 101-test suite passed
 throughout: the test covering the settle wait drove polls on `:00:30`, which
-never observes 23:59. Test 19 now pins the property that actually matters —
+never observes 23:59. Test 19 now pins the property that actually matters:
 *the same day seen through two poll phases must produce the same report.*
 
 **Do not clear the visit list at midnight.** Since we never acknowledge, the
@@ -220,18 +220,21 @@ report for that day.
 
 Measured on a real phone; regressing these makes the messages worse.
 
-- **Never use `<pre>`** — Telegram attaches a "COPY CODE" button and the
+- **Never use `<pre>`.** Telegram attaches a "COPY CODE" button and the
   space-based alignment drifts on mobile.
 - Use `<blockquote>`, and `<blockquote expandable>` for long lists so the
   message stays short but stays complete.
 - Align with `<b>bold labels</b>`, not padding spaces. Exception: a pure numeric
   column (time + duration) aligns fine because digits are equal width.
-- Never put emoji inside an aligned block — they are double width.
+- Never put emoji inside an aligned block; they are double width.
 - **No litre estimate.** The pump recirculates the same water rather than
   consuming it, so a "70 L" figure reads as the amount the cat drank and is
   actively misleading. Pump runtime is the honest number.
 - **One fact per line in the report body.** Battery and Filter shared a line
   once and wrapped mid-value on a phone, splitting "Filter 96%" across two lines.
+- **No em dashes.** Use `·` as a separator, a colon, or a full stop. Test 17
+  fails if any generated message contains one. The same rule applies to this
+  repo's own prose: there are no em dashes anywhere in it, on purpose.
 
 ---
 
@@ -241,7 +244,7 @@ Measured on a real phone; regressing these makes the messages worse.
 from live captures. The daily visit count and durations reproduce the vendor
 app's own history screen exactly. A first 18 h 37 min unattended run polled
 223/223 times without a single BLE failure. The board has run the full loop on
-its own — poll, decode, alert, daily report — and reconstructed a complete day
+its own (poll, decode, alert, daily report) and reconstructed a complete day
 across a mid-day reboot purely from the fountain's buffer.
 
 **Not verified.** Multi-day soak behaviour. The 12-hourly SNTP re-sync has never
@@ -270,4 +273,4 @@ the proximity sensor, and the app's visit-merging rule.
 
 ## License
 
-MIT — see [LICENSE](LICENSE).
+MIT. See [LICENSE](LICENSE).
