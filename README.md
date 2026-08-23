@@ -74,13 +74,22 @@ gateway was awake.
 
 <img src="docs/images/daily-summary.jpg" width="420" alt="Daily summary in Telegram: 19 drinks, 32 min 24 sec total, the full visit list, pump runtime, battery, filter, and a system health receipt">
 
-The alarm the whole project exists for, and its escalation:
+The alarm the whole project exists for, from the startup banner through to the
+all-clear:
 
-<img src="docs/images/thirst-alarm.jpg" width="420" alt="Telegram messages: startup banner, an eight-hour thirst alarm stating nothing is wrong with the device, and a twelve-hour escalation that promises not to write again">
+<img src="docs/images/thirst-alarm.jpg" width="420" alt="Telegram messages: startup banner, an eight-hour thirst alarm stating nothing is wrong with the device, a twelve-hour escalation that promises not to write again, and the all-clear when the cat drinks">
 
 Note what the alarm says: *nothing is wrong with the device, that is why I am
-telling you.* And that the escalation promises to stop talking. Both are
-deliberate.
+telling you.* Note also that the escalation promises to stop talking, and then
+does. An alarm that repeats itself is an alarm you learn to ignore.
+
+Everything else it can send. Each problem has a matching all-clear, so you are
+never left wondering whether something resolved itself:
+
+<img src="docs/images/alerts.jpg" width="420" alt="Telegram messages: water empty and refilled, a device fault, the fountain becoming unreachable and coming back with the outage length, and filter and battery threshold warnings">
+
+That is the complete set. Twelve message types, and on a normal day you get
+exactly one of them: the summary.
 
 ### Try it with no fountain, no phone and no bot
 
