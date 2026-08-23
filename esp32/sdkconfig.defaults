@@ -1,0 +1,43 @@
+# ESP32-C3 SuperMini configuration defaults
+CONFIG_IDF_TARGET="esp32c3"
+
+# Target & Flash
+CONFIG_ESPTOOLPY_FLASHSIZE_4MB=y
+CONFIG_ESPTOOLPY_FLASHSIZE="4MB"
+CONFIG_PARTITION_TABLE_CUSTOM=y
+CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"
+
+# Native USB-Serial/JTAG Console (CRITICAL for SuperMini - no external UART chip)
+CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG=y
+CONFIG_ESP_CONSOLE_SECONDARY_NONE=y
+
+# Bluetooth: NimBLE Central only (saves ~40 KB RAM compared to Bluedroid)
+CONFIG_BT_ENABLED=y
+CONFIG_BT_NIMBLE_ENABLED=y
+CONFIG_BT_BLUEDROID_ENABLED=n
+CONFIG_BT_NIMBLE_ROLE_CENTRAL=y
+CONFIG_BT_NIMBLE_ROLE_PERIPHERAL=n
+CONFIG_BT_NIMBLE_ROLE_BROADCASTER=n
+CONFIG_BT_NIMBLE_ROLE_OBSERVER=y
+CONFIG_BT_NIMBLE_MAX_CONNECTIONS=1
+CONFIG_BT_NIMBLE_ATT_PREFERRED_MTU=158
+CONFIG_BT_NIMBLE_HOST_TASK_STACK_SIZE=4096
+
+# Wi-Fi / TLS / Telegram
+CONFIG_MBEDTLS_CERTIFICATE_BUNDLE=y
+CONFIG_MBEDTLS_CERTIFICATE_BUNDLE_DEFAULT_FULL=y
+CONFIG_MBEDTLS_DYNAMIC_BUFFER=y
+
+# Main Task Stack. Measured on the board 22 Aug: peak use was 3268 B of a
+# 3584 B stack, i.e. 316 B spare - and that was WITHOUT the daily report,
+# whose emit_report() adds a 1600 B buffer on this same stack once a day.
+# The first daily report would have overflowed it. 16 KB leaves real margin;
+# main.c logs an error if the headroom ever drops under 2 KB again.
+CONFIG_ESP_MAIN_TASK_STACK_SIZE=16384
+
+# C Runtime & Memory
+CONFIG_NEWLIB_NANO_FORMAT=y
+
+# System Watchdog
+CONFIG_ESP_TASK_WDT_TIMEOUT_S=30
+CONFIG_ESP_TASK_WDT_CHECK_IDLE_TASK_CPU0=n

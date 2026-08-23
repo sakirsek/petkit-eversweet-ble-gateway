@@ -1,0 +1,25 @@
+{
+  "_comment_mac": "Your fountain's BLE address. Scan for a device named 'Eversweet ...'.",
+  "mac": "AA:BB:CC:DD:EE:FF",
+
+  "_comment_secret": "Your fountain's 6-byte auth secret as 12 hex chars. See docs/secret.md for how to get it. This file is a template - never put a real secret here.",
+  "secret": "1a2b3c4d5e6f",
+
+  "telegram_token": "<bot token from @BotFather>",
+  "telegram_chat_id": "<your chat id>",
+  "telegram_enabled": true,
+
+  "wifi_ssid": "YourNetwork",
+  "wifi_password": "your-wifi-password",
+
+  "poll_minutes": 5,
+  "thirst_hours": 8,
+  "thirst_escalate_hours": 12,
+  "normal_gap_minutes": 416,
+
+  "_comment_report_time": "INERT. The day closes report_settle_minutes after midnight and nowhere else. Kept only so the config layout stays valid.",
+  "report_time": "00:00",
+  "report_settle_minutes": 3,
+
+  "timezone_offset_hours": 3
+}

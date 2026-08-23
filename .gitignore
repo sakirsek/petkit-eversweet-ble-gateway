@@ -1,0 +1,41 @@
+# ---------------------------------------------------------------------------
+# Secrets. config.json holds the device secret, the bot token and the Wi-Fi
+# password. Never commit any of these. Before pushing, it is worth running:
+#   git grep -iE "secret|token" -- ':!*.example*' ':!docs/*' ':!.gitignore'
+# ---------------------------------------------------------------------------
+config.json
+config.*.json
+!config.example.json
+secrets.h
+**/secrets.h
+.env
+*.pem
+*.key
+
+# build artefacts
+core/*.dll
+core/*.so
+core/*.obj
+core/*.lib
+core/*.exp
+core/*.pdb
+build/
+esp32/build/
+esp32/sdkconfig
+esp32/sdkconfig.old
+
+# runtime output
+logs/
+*.log
+__pycache__/
+*.pyc
+
+# captures that may contain identifiers - review before committing any new ones
+data/*.jsonl
+!data/baseline-20260819.jsonl.gz
+
+# editors / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
