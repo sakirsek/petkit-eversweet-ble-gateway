@@ -56,46 +56,36 @@ signal is the *absence* of drinking. A cat that stops drinking is an early sign
 of kidney or urinary trouble. Reporting every individual visit produces alert
 fatigue and buries the one message that matters.
 
+The threshold came from measurement, not intuition, and it has already been
+re-tuned once. On 19 August the cat's longest normal gap was 3 h 40 min, so the
+first setting was 6 hours. On 20 August the cat slept through the afternoon and
+went **6 h 56 min** without drinking, in perfect health. A 6-hour threshold
+would have fired a false alarm. It is now 8 hours, with `normal_gap_minutes` at
+416. The daily report prints that day's longest gap, which is the only reason
+the re-tuning was possible. **Expect to tune this for your own cat.**
+
 ### What the messages actually look like
 
-The daily summary, with the visit list collapsed behind an expandable quote so
-the message stays short without losing anything:
+This is a real report from the board, not a mock-up. One night, one cat,
+reconstructed from the fountain's own history. The visit list sits behind an
+expandable quote so the message stays short without losing anything, and the
+system health receipt at the bottom is there so a quiet day still proves the
+gateway was awake.
 
-> 📊 **Daily summary · 19.08.2026**
->
-> 🐱 **10 drinks** · 15 min 44 sec total
-> Longest drink **3 min 40 sec** (01:29) · longest gap **3 hr 40 min**
->
-> > 01:00   43 sec
-> > 01:29   3 min 40 sec
-> > 01:59   1 min 8 sec
-> > *... 7 more, tap to expand*
->
-> 💧 **Pump** ran 14 hr 3 min
-> 🔋 **Battery** 100% (4214 mV)
-> 🧹 **Filter** 98%
-> ⚙️ Continuous mode · adapter
+<img src="docs/images/daily-summary.jpg" width="420" alt="Daily summary in Telegram: 19 drinks, 32 min 24 sec total, the full visit list, pump runtime, battery, filter, and a system health receipt">
 
-The alarm that the whole project exists for:
+That screenshot is also evidence of a bug. It went out at **23:59**, and it was
+supposed to arrive after midnight. That single wrong timestamp is what exposed
+the day-close defect described under *Design notes* below. Reports now arrive a
+few minutes after midnight.
 
-> ⚠️ **Your cat has not drunk for 8 hours**
-> Last drink **10:23** · 1 min 7 sec
->
-> > **Fountain:** on · pump running
-> > **Water:** present
-> > **Filter:** 98% · **Battery:** 100%
-> >
-> > Nothing is wrong with the device. That is why I am telling you.
+The alarm the whole project exists for, and its escalation:
 
-And escalation, which says it will then stop talking:
+<img src="docs/images/thirst-alarm.jpg" width="420" alt="Telegram messages: startup banner, an eight-hour thirst alarm stating nothing is wrong with the device, and a twelve-hour escalation that promises not to write again">
 
-> 🔴 **Your cat has not drunk for 12 hours**
-> Last drink **10:23** · 1 min 7 sec
->
-> > The device is still healthy. This gap is unusual for this cat. The longest
-> > normal gap measured is **6 hr 56 min**.
->
-> *I will not write about this again.*
+Note what the alarm says: *nothing is wrong with the device, that is why I am
+telling you.* And that the escalation promises to stop talking. Both are
+deliberate.
 
 ### Try it with no fountain, no phone and no bot
 
@@ -114,16 +104,6 @@ down this README. Nothing is fitted to make the demo look good.
 
 Once you do have a bot, `python preview_messages.py` sends one of every message
 type to your own phone.
-
----
-
-The threshold came from measurement, not intuition, and it has already been
-re-tuned once. On 19 August the cat's longest normal gap was 3 h 40 min, so the
-first setting was 6 hours. On 20 August the cat slept through the afternoon and
-went **6 h 56 min** without drinking, in perfect health. A 6-hour threshold
-would have fired a false alarm. It is now 8 hours, with `normal_gap_minutes` at
-416. The daily report prints that day's longest gap, which is the only reason
-the re-tuning was possible. **Expect to tune this for your own cat.**
 
 ---
 
@@ -165,9 +145,7 @@ python petkit_pc.py               # run the gateway
 `test_core.py` needs no configuration and no hardware: every expected value in
 it was captured from a real device. If it passes, your build is good.
 
-`python preview_messages.py` sends one of every message type to your phone so
-you can see what you are signing up for. `python replay_logs.py` re-runs
-recorded days through the core.
+`python replay_logs.py` re-runs recorded days through the core.
 
 ### 3. Move it to the board
 

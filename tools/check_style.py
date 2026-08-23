@@ -49,7 +49,16 @@ def tracked_files():
     return [f for f in r.stdout.split() if f]
 
 
+# Binary formats. Decoding these as text produces byte sequences that look like
+# whatever you are searching for, so skip them outright. The .gz capture is the
+# exception: it is text once decompressed, and its field names matter.
+BINARY_EXT = (".jpg", ".jpeg", ".png", ".gif", ".webp", ".ico", ".pdf",
+              ".bin", ".elf", ".dll", ".so", ".dylib", ".zip", ".ttf", ".woff")
+
+
 def read(path):
+    if path.lower().endswith(BINARY_EXT):
+        return ""
     if path.endswith(".gz"):
         try:
             return gzip.open(path, "rt", errors="replace").read()
