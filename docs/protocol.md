@@ -168,6 +168,31 @@ at noon still reconstructs the whole morning. On 22 Aug 2026 a board that had
 rebooted at 16:09 produced a complete report going back to 04:15, entirely from
 the fountain's own buffer.
 
+### The buffer is shared, and the phone app does drain it
+
+Not acking protects the app from you. It does not protect you from the app.
+When the official app syncs it *does* ack, and those records leave the
+unacknowledged stream for good. A reader that was offline while that happened
+cannot get them back: they now exist only in the app's own database.
+
+Observed on 23 Aug 2026. The gateway was down until 15:14 and the phone app was
+opened during the morning. The app's history screen showed 17 visits for the
+day. The gateway's history read at 15:14 returned only the two most recent,
+11:09 and 12:36; the nine visits from 01:51 to 09:02 were not offered at all.
+The resulting daily report said 8 drinks and 8 min 32 sec, against the app's 17
+and 19 min 20 sec. The missing records form one unbroken block ending exactly
+where the morning sync would have stopped, and the reader applies no lower
+bound of its own, so the records were never sent rather than dropped.
+
+The ack behaviour itself was measured separately and is described above. What
+has not been run is the direct A/B: read the pending counter, let the app sync,
+read it again. Until someone does that, treat the mechanism as strongly
+indicated rather than proven.
+
+**The lesson for anyone building on this protocol: do not treat the fountain's
+buffer as your storage.** It is a recovery aid that works only while nothing
+else has consumed it. Persist what you have already read.
+
 ---
 
 ## State payload

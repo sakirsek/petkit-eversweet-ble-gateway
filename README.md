@@ -291,7 +291,10 @@ device replays its whole buffer on the next poll and cleared records come
 straight back, counted as today's. The list is a rolling multi-day window
 instead, pruned at 48 h, and the report filters it by civil day. The upside is
 free restart recovery: a gateway restarted at noon still produces a complete
-report for that day.
+report for that day, **as long as nothing else has drained the buffer first.**
+The phone app acks when it syncs, which consumes those records for everyone.
+See "The buffer is shared" in [docs/protocol.md](docs/protocol.md). The real
+fix is for the gateway to persist its own visit list, which it does not do yet.
 
 ### Telegram formatting rules
 
@@ -320,10 +323,18 @@ Measured on a real phone; regressing these makes the messages worse.
 
 **Verified.** The core passes 112 regression tests, every expected value taken
 from live captures. The daily visit count and durations reproduce the vendor
-app's own history screen exactly. A first 18 h 37 min unattended run polled
+app's own history screen exactly, for every record the fountain still offers.
+A first 18 h 37 min unattended run polled
 223/223 times without a single BLE failure. The board has run the full loop on
 its own (poll, decode, alert, daily report) and reconstructed a complete day
 across a mid-day reboot purely from the fountain's buffer.
+
+**Known gap.** Restart recovery from the fountain's buffer holds only while
+the phone app has not synced in the meantime. On 23 Aug 2026 it had, and a
+gateway that booted at 15:14 reported 8 of that day's 17 visits: the nine from
+01:51 to 09:02 had already been acked away. Nothing is lost while the gateway
+is running. The gateway does not yet persist its visit list across a reboot,
+and that, not the buffer, is where the day should be kept.
 
 **Not verified.** Multi-day soak behaviour. The 12-hourly SNTP re-sync has never
 been observed. The thirst threshold rests on a handful of days of one cat. The
