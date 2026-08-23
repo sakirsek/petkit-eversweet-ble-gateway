@@ -162,7 +162,8 @@ tools/check_leaks.py     Refuses to let your secrets reach GitHub. Run it before
 esp32/                   ESP-IDF v5.5 firmware (NimBLE)
 docs/protocol.md         The reverse-engineered BLE protocol
 docs/secret.md           How to obtain your fountain's auth secret
-data/                    Overnight baseline capture used to pick the thresholds
+data/                    Overnight baseline capture used to pick the
+                         thresholds, with its own README describing the format
 ```
 
 **Language choice:** ESP-IDF + C with **NimBLE** (roughly 40 KB less RAM than
