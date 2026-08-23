@@ -247,7 +247,11 @@ across a mid-day reboot purely from the fountain's buffer.
 **Not verified.** Multi-day soak behaviour. The 12-hourly SNTP re-sync has never
 been observed. The thirst threshold rests on a handful of days of one cat. The
 fountain's history buffer capacity is known only to be ≥ 19 records / ≥ 12 h.
-The secret-extraction script has been exercised on one phone.
+`tools/get_secret.py` has completed a real end-to-end extraction (OnePlus
+CPH2655 / Android 16 / `com.petkit.oversea`, and the secret it produced was
+verified identical to the one in daily use); its missing-app path was checked
+separately on a Xiaomi MI 8. That is two phones and one app build, so how far
+it generalises is unknown.
 
 Issues reporting either success or failure on **a different phone, a different
 Android version, or a different fountain** are the most useful thing this

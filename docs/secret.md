@@ -95,18 +95,19 @@ those places by itself; if yours is somewhere unusual, pass
 
 ### How well is this tested?
 
-Honestly, in pieces:
+**End to end, on real hardware.** On a OnePlus CPH2655 running Android 16 with
+`com.petkit.oversea`, the script found adb outside `PATH`, found the phone,
+identified the app, scanned that day's log, and recovered both the secret and
+the fountain's MAC. The secret it produced was compared against the one the
+gateway had been authenticating with for days: **identical.**
 
-- **The secret really is in that log file, in plain text, readable over adb
-  without root.** Confirmed on a OnePlus CPH2655 running Android 16 with the
-  international app — that is how this project's own secret was recovered.
-- **The script's plumbing** — locating adb outside `PATH`, finding the phone,
-  enumerating packages, and reporting a missing app correctly — was exercised on
-  a second device, a Xiaomi MI 8 on Android 15.
-- **The script has never completed a real extraction end to end**, because the
-  two phones available were not the same phone: the one with the app was not the
-  one wired up for testing. The log-parsing path is therefore the least proven
-  part of this repo.
+Its behaviour when things are missing was checked separately on a Xiaomi MI 8
+(Android 15) with no PetKit app installed — it reports that clearly instead of
+failing in a confusing way.
+
+What is still unknown is how far this generalises: two phones, two vendors, two
+Android versions, one app build. The log path and the log line could change in
+a future app release.
 
 If it works or fails for you, please say so in an issue. That is the single most
 useful report this project can receive right now — and if it fails, the manual

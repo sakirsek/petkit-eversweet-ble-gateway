@@ -40,7 +40,9 @@ LOG_DIR_TMPL = "/sdcard/Android/data/{pkg}/cache/logs"
 # changed between app versions.
 SECRET_RE = re.compile(r"secret[\"'\s:=]{1,4}([0-9a-fA-F]{12,16})")
 MAC_RE = re.compile(r"\b((?:[0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2})\b")
-NAME_RE = re.compile(r"\b(Petkit[_A-Za-z0-9]*)\b")
+# The advertised name looks like "Petkit_CTW3UV_100". Requiring the underscore
+# keeps this from matching class names such as PetkitBLEManager.
+NAME_RE = re.compile(r"\b(Petkit_[A-Za-z0-9]+(?:_[A-Za-z0-9]+)*)\b")
 
 
 _ADB = None
