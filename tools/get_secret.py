@@ -43,18 +43,68 @@ MAC_RE = re.compile(r"\b((?:[0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2})\b")
 NAME_RE = re.compile(r"\b(Petkit[_A-Za-z0-9]*)\b")
 
 
+_ADB = None
+
+
+def find_adb(override=None):
+    """Locate adb. It is very often installed but not on PATH - the Android
+    Studio SDK drops it in a fixed place on every platform."""
+    global _ADB
+    if _ADB:
+        return _ADB
+    if override:
+        if not os.path.isfile(override):
+            die("--adb path does not exist: %s" % override)
+        _ADB = override
+        return _ADB
+
+    from shutil import which
+    hit = which("adb")
+    if hit:
+        _ADB = hit
+        return _ADB
+
+    home = os.path.expanduser("~")
+    candidates = []
+    for env in ("ANDROID_HOME", "ANDROID_SDK_ROOT"):
+        base = os.environ.get(env)
+        if base:
+            candidates.append(os.path.join(base, "platform-tools", "adb"))
+    candidates += [
+        # Windows
+        os.path.join(home, "AppData", "Local", "Android", "Sdk",
+                     "platform-tools", "adb.exe"),
+        r"C:\platform-tools\adb.exe",
+        # macOS
+        os.path.join(home, "Library", "Android", "sdk", "platform-tools", "adb"),
+        "/opt/homebrew/bin/adb",
+        "/usr/local/bin/adb",
+        # Linux
+        os.path.join(home, "Android", "Sdk", "platform-tools", "adb"),
+        "/usr/bin/adb",
+    ]
+    for c in candidates:
+        for path in (c, c + ".exe"):
+            if os.path.isfile(path):
+                _ADB = path
+                return _ADB
+
+    die("adb was not found.\n"
+        "    It is part of Android platform-tools:\n"
+        "    https://developer.android.com/tools/releases/platform-tools\n"
+        "    If you already have it, pass --adb <path to adb>.")
+
+
 def adb(args, serial=None, binary=False):
     """Run an adb command. Returns (returncode, output)."""
-    cmd = ["adb"]
+    cmd = [find_adb()]
     if serial:
         cmd += ["-s", serial]
     cmd += args
     try:
         p = subprocess.run(cmd, capture_output=True, timeout=60)
     except FileNotFoundError:
-        die("adb was not found on PATH.\n"
-            "    Install Android platform-tools and try again:\n"
-            "    https://developer.android.com/tools/releases/platform-tools")
+        die("adb could not be executed: %s" % _ADB)
     except subprocess.TimeoutExpired:
         return 1, b"" if binary else ""
     out = p.stdout if binary else p.stdout.decode("utf-8", "replace")
@@ -202,8 +252,12 @@ def main():
                     help="print the secret (do not share the output)")
     ap.add_argument("--all-logs", action="store_true",
                     help="scan every log file, not just until a match")
+    ap.add_argument("--adb", help="path to adb, if it is not on PATH and not "
+                                  "in the usual SDK location")
     args = ap.parse_args()
 
+    find_adb(args.adb)
+    print("[*] adb: %s" % _ADB)
     print("[*] Looking for a phone...")
     serial = pick_device(args.serial)
     print("[*] Using device %s" % serial)

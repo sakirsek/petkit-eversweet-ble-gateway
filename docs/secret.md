@@ -78,6 +78,12 @@ adb exec-out cat /sdcard/Android/data/com.petkit.oversea/cache/logs/2026-08-23.l
 Take the 12 hex characters after `secret:` and put them in `config.json` as
 `"secret"`.
 
+**If it says adb was not found:** it very often is installed but not on `PATH` —
+Android Studio puts it in `~/AppData/Local/Android/Sdk/platform-tools` on
+Windows, `~/Library/Android/sdk/platform-tools` on macOS. The script looks in
+those places by itself; if yours is somewhere unusual, pass
+`--adb /path/to/adb`.
+
 ### If it finds nothing
 
 - **Open the app and actually connect to the fountain first.** The line is only
@@ -89,12 +95,23 @@ Take the 12 hex characters after `secret:` and put them in `config.json` as
 
 ### How well is this tested?
 
-Honestly: **on one phone.** A OnePlus CPH2655 running Android 16, with the
-international app. The path and the log line are almost certainly stable across
-devices — it is the app writing to its own sandbox — but the Android version,
-the vendor and the app version all vary in ways nobody has checked. If it works
-or fails for you, please say so in an issue; that is the single most useful
-report this project can receive right now.
+Honestly, in pieces:
+
+- **The secret really is in that log file, in plain text, readable over adb
+  without root.** Confirmed on a OnePlus CPH2655 running Android 16 with the
+  international app — that is how this project's own secret was recovered.
+- **The script's plumbing** — locating adb outside `PATH`, finding the phone,
+  enumerating packages, and reporting a missing app correctly — was exercised on
+  a second device, a Xiaomi MI 8 on Android 15.
+- **The script has never completed a real extraction end to end**, because the
+  two phones available were not the same phone: the one with the app was not the
+  one wired up for testing. The log-parsing path is therefore the least proven
+  part of this repo.
+
+If it works or fails for you, please say so in an issue. That is the single most
+useful report this project can receive right now — and if it fails, the manual
+`adb exec-out cat ... | grep -i secret` above is the ground truth to compare
+against.
 
 ---
 
