@@ -74,11 +74,6 @@ gateway was awake.
 
 <img src="docs/images/daily-summary.jpg" width="420" alt="Daily summary in Telegram: 19 drinks, 32 min 24 sec total, the full visit list, pump runtime, battery, filter, and a system health receipt">
 
-That screenshot is also evidence of a bug. It went out at **23:59**, and it was
-supposed to arrive after midnight. That single wrong timestamp is what exposed
-the day-close defect described under *Design notes* below. Reports now arrive a
-few minutes after midnight.
-
 The alarm the whole project exists for, and its escalation:
 
 <img src="docs/images/thirst-alarm.jpg" width="420" alt="Telegram messages: startup banner, an eight-hour thirst alarm stating nothing is wrong with the device, and a twelve-hour escalation that promises not to write again">
