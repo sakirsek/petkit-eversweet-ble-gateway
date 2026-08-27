@@ -70,7 +70,7 @@ static void msg(pk_t *p, const char *fmt, ...) {
     p->day_messages++;    /* today only - reset by day_rollover. This is the
                            * figure the daily health receipt prints. It was
                            * reset and printed but never incremented, so every
-                           * report ever sent claimed "0 messages sent today",
+                           * report ever sent claimed "0 alerts sent today",
                            * including 26.08.2026 which had sent four. */
 }
 
@@ -476,7 +476,14 @@ static void emit_report(pk_t *p, int32_t day_no, uint32_t now) {
              "<blockquote expandable><b>System health</b>\n"
              "%u / %u polls succeeded today\n"
              "%u hr %u min uptime\n"
-             "%u messages sent today</blockquote>",
+             /* "alerts", not "messages". The core can only honestly count
+              * what it queued itself. The startup banner is written and sent
+              * by the platform layer and never passes through msg(), and this
+              * report is read before it counts itself. Both are real messages
+              * on the phone and neither is an alert, so naming the number
+              * after what it actually counts is the only way it stays true
+              * on a day the gateway rebooted. */
+             "%u alerts sent today</blockquote>",
              p->day_polls_ok, p->day_polls_total,
              uptime / 3600, (uptime % 3600) / 60, p->day_messages);
 

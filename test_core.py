@@ -521,7 +521,7 @@ ok("the 23:59 drink is not double-counted onto 20 Aug",
    "23:59" not in allrep[1])
 
 print("\n=== 20. THE DAILY RECEIPT COUNTS THE MESSAGES IT ACTUALLY SENT ===")
-# Every report the gateway has ever sent said "0 messages sent today" - the
+# Every report the gateway has ever sent said "0 alerts sent today" - the
 # 26.08.2026 one said it after sending four (water empty, refilled, thirst
 # alarm, alarm cleared). day_messages was reset at midnight and printed in the
 # receipt, but no code path ever incremented it.
@@ -550,11 +550,11 @@ eq("three alerts really went out", len(core17.take()), 3)
 m = run(core17, Fountain(STEADY), T(19, 8, 20), T(20, 0, 10))
 rep17 = [x for x in m if "Daily summary" in x]
 eq("exactly one report", len(rep17), 1)
-ok("the receipt counts what was sent", "3 messages sent today" in rep17[0])
+ok("the receipt counts what was sent", "3 alerts sent today" in rep17[0])
 ok("the swallowed startup alarm is not counted",
-   "4 messages sent today" not in rep17[0])
+   "4 alerts sent today" not in rep17[0])
 ok("and it is no longer the old constant zero",
-   "0 messages sent today" not in rep17[0])
+   "0 alerts sent today" not in rep17[0])
 
 print("\n=== 21. NO ALARM WE WILL HAVE TO TAKE BACK FIVE MINUTES LATER ===")
 # 26.08.2026, live: last drink 07:41, so the 8 h threshold fell at 15:41. The

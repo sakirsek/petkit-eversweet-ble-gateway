@@ -307,12 +307,18 @@ is the five-minute-wide part, which is the part that is actually wide.
 **A receipt that lies is worse than no receipt.** The system health block
 reported `0 messages sent today` on every report the gateway ever sent,
 including days it had sent four. `day_messages` was reset at midnight and
-printed, but nothing incremented it. The fix carries its own trap: the platform
-layer throws away the startup poll's alarms, because a fountain that was
-already empty before we booted is not news. Counting at queue time would make
-the receipt claim a message nobody received, so discarding now goes through
-`pk_msg_drop`, which un-counts what it drops. `pk_msg_clear` remains the
-drain-after-sending path and must not be used for the startup swallow.
+printed, but nothing incremented it.
+
+The fix carries two traps. The platform layer throws away the startup poll's
+alarms, because a fountain that was already empty before we booted is not
+news; counting at queue time would make the receipt claim a message nobody
+received, so discarding now goes through `pk_msg_drop`, which un-counts what
+it drops. `pk_msg_clear` remains the drain-after-sending path and must not be
+used for the startup swallow. And the line now says **alerts**, not messages:
+the startup banner is written and sent by the platform layer without ever
+passing through `msg()`, and the report is read before it counts itself, so
+"messages" would have been short by one on every day the gateway rebooted.
+Name the number after what it can actually count.
 
 **Do not clear the visit list at midnight.** Since we never acknowledge, the
 device replays its whole buffer on the next poll and cleared records come

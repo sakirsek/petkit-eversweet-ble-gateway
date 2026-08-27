@@ -95,7 +95,7 @@ Longest drink <b>3 min 40 sec</b> (01:29) · longest gap <b>3 hr 40 min</b>
 <blockquote expandable><b>System health</b>
 288 / 288 polls succeeded today
 23 hr 59 min uptime
-4 messages sent today</blockquote>"""),
+4 alerts sent today</blockquote>"""),
 ]
 
 
