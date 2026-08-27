@@ -520,6 +520,93 @@ ok("second is dated 20 Aug", "20.08.2026" in allrep[1])
 ok("the 23:59 drink is not double-counted onto 20 Aug",
    "23:59" not in allrep[1])
 
+print("\n=== 20. THE DAILY RECEIPT COUNTS THE MESSAGES IT ACTUALLY SENT ===")
+# Every report the gateway has ever sent said "0 messages sent today" - the
+# 26.08.2026 one said it after sending four (water empty, refilled, thirst
+# alarm, alarm cleared). day_messages was reset at midnight and printed in the
+# receipt, but no code path ever incremented it.
+#
+# The second half of this test is the trap that comes with fixing the first:
+# the startup poll raises alarms about a state we have only just learned
+# about, and the platform layer throws them away. Counting at queue time would
+# make the receipt claim a message nobody ever received.
+count_cfg = pk.default_cfg()
+count_cfg.normal_gap_sec = cfg.normal_gap_sec
+dry3 = pk.state_decode(bytes.fromhex(CLEAR)); dry3.warn_no_water = 1
+FIRST_DRINK = [(T(19, 7, 30), 60)]
+# a drink every two hours, so nothing here is about the thirst alarm
+STEADY = FIRST_DRINK + [(T(19, h, 15), 45) for h in range(9, 24, 2)]
+
+core17 = pk.Core(count_cfg, T(19, 8, 0))
+core17.poll_ok(dry3, FIRST_DRINK, T(19, 8, 0))
+eq("the startup poll really did raise an alarm", len(core17.messages()), 1)
+core17.drop()                                        # swallowed, never sent
+
+core17.poll_ok(healthy, FIRST_DRINK, T(19, 8, 5))    # refilled
+core17.poll_ok(dry3,    FIRST_DRINK, T(19, 8, 10))   # empty again
+core17.poll_ok(healthy, FIRST_DRINK, T(19, 8, 15))   # refilled again
+eq("three alerts really went out", len(core17.take()), 3)
+
+m = run(core17, Fountain(STEADY), T(19, 8, 20), T(20, 0, 10))
+rep17 = [x for x in m if "Daily summary" in x]
+eq("exactly one report", len(rep17), 1)
+ok("the receipt counts what was sent", "3 messages sent today" in rep17[0])
+ok("the swallowed startup alarm is not counted",
+   "4 messages sent today" not in rep17[0])
+ok("and it is no longer the old constant zero",
+   "0 messages sent today" not in rep17[0])
+
+print("\n=== 21. NO ALARM WE WILL HAVE TO TAKE BACK FIVE MINUTES LATER ===")
+# 26.08.2026, live: last drink 07:41, so the 8 h threshold fell at 15:41. The
+# cat drank at 15:43. The poll ran at 15:43:40 and the fountain had not yet
+# written the record, so "Your cat has not drunk for 8 hours" went out at
+# 15:44 - and "alarm cleared" at 15:49.
+#
+# The alarm was not wrong about the past. It was asked before it could know,
+# and an alarm retracted five minutes later is worse than no alarm: it is what
+# teaches you to stop reading them.
+race_cfg = pk.default_cfg()
+race_cfg.thirst_sec = 6 * 3600
+race_cfg.normal_gap_sec = cfg.normal_gap_sec
+
+#   last drink 10:00:00 (60 s) -> readable 10:03:00, threshold at 16:00:00
+#   next drink 16:02:00 (17 s) -> readable 16:04:17
+#   polls land on :03:40, so 16:03:40 sees a 6 h 03 m gap and no record yet
+RACE     = [(T(19, 10, 0, 0), 60), (T(19, 16, 2, 0), 17)]
+DRY_ONLY = [(T(19, 10, 0, 0), 60)]
+
+core18 = pk.Core(race_cfg, T(19, 9, 58, 40))
+core18.poll_ok(healthy, [], T(19, 9, 58, 40)); core18.drop()
+m = run(core18, Fountain(RACE), T(19, 10, 3, 40), T(19, 17, 0, 40))
+eq("a drink just past the threshold produces no alarm at all", m, [])
+eq("so there is no alarm left open either", core18.thirst_level, 0)
+eq("and the drink itself was seen", core18.last_drink_ts, T(19, 16, 2, 0))
+
+# The grace must not have quietly disabled the alarm. Same timeline, minus the
+# drink: that dry spell is real and must still be reported.
+core19 = pk.Core(race_cfg, T(19, 9, 58, 40))
+core19.poll_ok(healthy, [], T(19, 9, 58, 40)); core19.drop()
+early = run(core19, Fountain(DRY_ONLY), T(19, 10, 3, 40), T(19, 16, 3, 40))
+eq("silent at the first poll past the raw threshold", early, [])
+late = run(core19, Fountain(DRY_ONLY), T(19, 16, 8, 40), T(19, 16, 8, 40))
+eq("and it speaks at the very next one", len(late), 1)
+ok("still worded as the configured threshold",
+   "not drunk for 6 hours" in late[0])
+ok("with the real last drink", "10:00" in late[0])
+eq("the alarm is open", core19.thirst_level, 1)
+
+# The cost is bounded and self-tuning: one poll interval plus the write lag,
+# whatever poll_sec happens to be. On an eight-hour dry spell that is noise.
+slow = pk.default_cfg()
+slow.thirst_sec = 6 * 3600
+slow.poll_sec = 900
+core20 = pk.Core(slow, T(19, 9, 58, 40))
+core20.poll_ok(healthy, [], T(19, 9, 58, 40)); core20.drop()
+m = run(core20, Fountain(DRY_ONLY), T(19, 10, 3, 40), T(19, 16, 13, 40), step=900)
+eq("a slower poll waits proportionally longer, not a fixed amount", m, [])
+m = run(core20, Fountain(DRY_ONLY), T(19, 16, 18, 40), T(19, 16, 18, 40), step=900)
+eq("and then it reports", len(m), 1)
+
 print("\n" + "=" * 60)
 print("RESULT: %d passed, %d failed" % (PASS, FAIL))
 sys.exit(1 if FAIL else 0)

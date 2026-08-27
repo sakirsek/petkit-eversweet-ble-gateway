@@ -66,7 +66,12 @@ static void msg(pk_t *p, const char *fmt, ...) {
     vsnprintf(p->msg[p->msg_n], PK_MSG_LEN, fmt, ap);
     va_end(ap);
     p->msg_n++;
-    p->messages_sent++;
+    p->messages_sent++;   /* lifetime */
+    p->day_messages++;    /* today only - reset by day_rollover. This is the
+                           * figure the daily health receipt prints. It was
+                           * reset and printed but never incremented, so every
+                           * report ever sent claimed "0 messages sent today",
+                           * including 26.08.2026 which had sent four. */
 }
 
 /* ================================================================ frames */
@@ -184,6 +189,18 @@ const char *pk_msg(const pk_t *p, int i) {
     return (i >= 0 && i < p->msg_n) ? p->msg[i] : "";
 }
 void pk_msg_clear(pk_t *p) { p->msg_n = 0; }
+
+/* Throw the queue away WITHOUT counting it as sent. The platform layer calls
+ * this once at startup, to swallow alarms about a state it has only just
+ * learned about - a fountain that was already empty before we booted is not
+ * news. pk_msg_clear is the drain-AFTER-sending path; using it here would
+ * make the daily receipt claim messages nobody ever received. */
+void pk_msg_drop(pk_t *p) {
+    uint32_t n = (uint32_t)p->msg_n;
+    p->day_messages   = (p->day_messages   > n) ? p->day_messages   - n : 0;
+    p->messages_sent  = (p->messages_sent  > n) ? p->messages_sent  - n : 0;
+    p->msg_n = 0;
+}
 int pk_visit_count(const pk_t *p) { return p->visit_n; }
 int pk_sizeof(void) { return (int)sizeof(pk_t); }
 uint32_t pk_last_drink_ts(const pk_t *p) { return p->last_drink_ts; }
@@ -301,6 +318,29 @@ static void check_thirst(pk_t *p, uint32_t now) {
     if (!p->baseline_ready || !p->last_drink_ts) return;
     if (device_unhealthy(p)) return;
 
+    /* Do not ask "has it been 8 hours". Ask "has it been 8 hours AND would a
+     * drink that ended the dry spell already be visible to me".
+     *
+     * The fountain writes each record up to PK_RECORD_LAG_SEC after the visit
+     * ends, and we only look once per poll_sec. So at the FIRST poll past the
+     * raw threshold the cat may already have drunk and there is no way to
+     * know it yet. Firing there turns the whole poll_sec after the threshold
+     * into a false-alarm window.
+     *
+     * It is not hypothetical. 26.08.2026: last drink 07:41, threshold 15:41,
+     * the cat drank at 15:43, the poll ran at 15:43:40 with the record not
+     * yet written. The alarm went out at 15:44 and was retracted at 15:49.
+     * An alarm taken back five minutes later is worse than no alarm, because
+     * it teaches you to ignore the next one - and this whole design is built
+     * on the messages being rare enough to trust.
+     *
+     * Waiting one more poll cycle costs nothing on an eight-hour dry spell.
+     * It does not close the window completely: a drink in the final
+     * PK_RECORD_LAG_SEC before the poll is still unreadable, and no amount of
+     * arithmetic here can fix that. What it does remove is the poll_sec-wide
+     * part, which is the part that is actually wide, and where this one fell. */
+    uint32_t grace = p->cfg.poll_sec + PK_RECORD_LAG_SEC;
+
     uint32_t gap = (now > p->last_drink_ts) ? now - p->last_drink_ts : 0;
     char at[16], dur[32];
     fmt_clock(p->last_drink_ts, p->cfg.tz_offset_sec, at, sizeof at);
@@ -312,7 +352,7 @@ static void check_thirst(pk_t *p, uint32_t now) {
 
     const pk_state_t *s = &p->last;
 
-    if (p->thirst_level == 0 && gap >= p->cfg.thirst_sec) {
+    if (p->thirst_level == 0 && gap >= p->cfg.thirst_sec + grace) {
         p->thirst_level = 1;
         msg(p, "⚠️ <b>Your cat has not drunk for %u hours</b>\n"
                "Last drink <b>%s</b> · %s\n"
@@ -324,7 +364,7 @@ static void check_thirst(pk_t *p, uint32_t now) {
             p->cfg.thirst_sec / 3600, at, dur,
             s->pump_running ? "running" : "stopped",
             s->filter_pct, s->battery_pct);
-    } else if (p->thirst_level == 1 && gap >= p->cfg.thirst_escalate_sec) {
+    } else if (p->thirst_level == 1 && gap >= p->cfg.thirst_escalate_sec + grace) {
         p->thirst_level = 2;
         if (p->cfg.normal_gap_sec) {
             char ng[32]; fmt_duration(p->cfg.normal_gap_sec, ng, sizeof ng);

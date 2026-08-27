@@ -141,7 +141,7 @@ Then:
 
 ```bash
 pip install -r requirements.txt   # bleak, for the BLE transport
-python test_core.py               # 112 regression tests, all must pass
+python test_core.py               # 128 regression tests, all must pass
 python petkit_pc.py --once        # single poll, print result, exit
 python petkit_pc.py               # run the gateway
 ```
@@ -224,7 +224,7 @@ core/Makefile            Builds the core on Linux, macOS and the Pi
 core/build.bat           Builds the core on Windows (MSVC, found via vswhere)
 pk.py                    ctypes bindings (pk_t kept opaque via pk_sizeof)
 petkit_pc.py             PC driver: BLE (bleak) + Telegram + clock + logging
-test_core.py             112 regression tests, all from live measurements
+test_core.py             128 regression tests, all from live measurements
 preview_messages.py      Sends every message type to Telegram for review
 replay_logs.py           Replays a recorded run through the core
 tools/demo.py            Replays data/ through the core. No hardware needed
@@ -286,6 +286,34 @@ throughout: the test covering the settle wait drove polls on `:00:30`, which
 never observes 23:59. Test 19 now pins the property that actually matters:
 *the same day seen through two poll phases must produce the same report.*
 
+**An alarm you take back is worse than no alarm.** The thirst alarm used to
+fire at the first poll where `now - last_drink >= 8 h`. But the fountain writes
+each record about 40 seconds after the visit ends (budgeted at two minutes) and
+we only look every five minutes, so at that first poll the cat may already have
+drunk and there is no
+way to know it yet. The whole five minutes after the threshold was a
+false-alarm window. On 26 Aug 2026 it landed there: last drink 07:41,
+threshold 15:41, the cat drank at 15:43, the poll ran at 15:43:40 with the
+record not yet written. The alarm went out at 15:44 and was retracted at 15:49.
+
+The alarm was not wrong about the past, it was asked before it could know. The
+condition is now *"has it been 8 hours **and** would a drink that ended the dry
+spell already be visible to me"*, which adds `poll_sec + 120 s` of grace. That
+costs one extra poll on an eight-hour dry spell, which is nothing, and it does
+not close the window completely: a drink in the final two minutes before the
+poll is still unreadable, and no arithmetic here can fix that. What it removes
+is the five-minute-wide part, which is the part that is actually wide.
+
+**A receipt that lies is worse than no receipt.** The system health block
+reported `0 messages sent today` on every report the gateway ever sent,
+including days it had sent four. `day_messages` was reset at midnight and
+printed, but nothing incremented it. The fix carries its own trap: the platform
+layer throws away the startup poll's alarms, because a fountain that was
+already empty before we booted is not news. Counting at queue time would make
+the receipt claim a message nobody received, so discarding now goes through
+`pk_msg_drop`, which un-counts what it drops. `pk_msg_clear` remains the
+drain-after-sending path and must not be used for the startup swallow.
+
 **Do not clear the visit list at midnight.** Since we never acknowledge, the
 device replays its whole buffer on the next poll and cleared records come
 straight back, counted as today's. The list is a rolling multi-day window
@@ -321,7 +349,7 @@ Measured on a real phone; regressing these makes the messages worse.
 
 ## Status
 
-**Verified.** The core passes 112 regression tests, every expected value taken
+**Verified.** The core passes 128 regression tests, every expected value taken
 from live captures. The daily visit count and durations reproduce the vendor
 app's own history screen exactly, for every record the fountain still offers.
 A first 18 h 37 min unattended run polled

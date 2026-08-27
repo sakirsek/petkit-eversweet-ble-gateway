@@ -104,6 +104,7 @@ _lib.pk_tick.argtypes = [C.c_void_p, C.c_uint32]
 _lib.pk_msg_count.argtypes = [C.c_void_p]; _lib.pk_msg_count.restype = C.c_int
 _lib.pk_msg.argtypes = [C.c_void_p, C.c_int]; _lib.pk_msg.restype = C.c_char_p
 _lib.pk_msg_clear.argtypes = [C.c_void_p]
+_lib.pk_msg_drop.argtypes = [C.c_void_p]
 _lib.pk_visit_count.argtypes = [C.c_void_p]; _lib.pk_visit_count.restype = C.c_int
 _lib.pk_last_drink_ts.argtypes = [C.c_void_p]
 _lib.pk_last_drink_ts.restype = C.c_uint32
@@ -185,6 +186,10 @@ class Core:
 
     def clear(self):
         _lib.pk_msg_clear(self._p)
+
+    def drop(self):
+        """Throw the queue away without counting it as sent (startup only)."""
+        _lib.pk_msg_drop(self._p)
 
     def take(self):
         """Return queued messages and empty the queue."""

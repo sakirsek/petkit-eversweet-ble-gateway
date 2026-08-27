@@ -261,7 +261,7 @@ async def main():
         log("first poll failed: %s" % err, "!!!")
     else:
         core.poll_ok(state, visits, now)
-        core.take()   # swallow startup alarms; only send the banner below
+        core.drop()   # swallow startup alarms; only send the banner below
         tg.send("🚰 <b>Fountain monitoring active</b>\n"
                 "<blockquote><b>Status:</b> %s · %s mode\n"
                 "<b>Pump:</b> %s · %s\n"

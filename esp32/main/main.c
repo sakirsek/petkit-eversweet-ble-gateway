@@ -199,7 +199,7 @@ void app_main(void) {
 
     if (ok) {
         pk_poll_ok(&g_core, &s_ble_res.state, s_ble_res.visits, s_ble_res.visit_count, now);
-        pk_msg_clear(&g_core); // Swallow startup alarms so we don't spam
+        pk_msg_drop(&g_core); // Swallow startup alarms so we don't spam (and do not count them as sent)
 
         // Send startup banner
         if (TG_ENABLED) {

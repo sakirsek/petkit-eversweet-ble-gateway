@@ -32,6 +32,14 @@
 #define PK_MSG_LEN   1600   /* Telegram allows 4096; reports fit here */
 #define PK_FRAME_MAX  288   /* negotiated MTU is 158, so this is ample */
 
+/* How long after a visit ENDS before the fountain has written the record and
+ * we can read it back. Measured at about 40 s (docs/protocol.md); the test
+ * harness has modelled it at 120 s since it was written, and 120 is the figure
+ * to design against here. Being early costs a false alarm; being late costs a
+ * few minutes on an eight-hour dry spell, which nobody will ever notice.
+ * See check_thirst - this is why the thirst threshold carries a grace. */
+#define PK_RECORD_LAG_SEC 120
+
 /* ---------------------------------------------------------------- commands */
 enum {
     PK_CMD_AUTH      = 86,   /* verify secret        -> reply 01 = accepted  */
@@ -176,6 +184,8 @@ PK_API void pk_tick(pk_t *p, uint32_t now);
 PK_API int         pk_msg_count(const pk_t *p);
 PK_API const char *pk_msg(const pk_t *p, int i);
 PK_API void        pk_msg_clear(pk_t *p);
+/* Discard the queue without counting it as sent - startup swallow only. */
+PK_API void        pk_msg_drop(pk_t *p);
 
 /* Accessors so the platform layer can treat pk_t as opaque. */
 PK_API int      pk_sizeof(void);
