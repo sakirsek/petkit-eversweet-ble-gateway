@@ -42,6 +42,37 @@ static void outbox_push(const char *msg) {
     }
 }
 
+/* Drain the outbox, oldest first, and stop at the first failure so the order
+ * is preserved. Wi-Fi must already be up. */
+static void send_outbox(void) {
+    int sent = 0;
+    for (int i = 0; i < s_outbox_count; i++) {
+        esp_task_wdt_reset();
+        if (!pk_net_telegram_send(TG_TOKEN, TG_CHAT_ID, s_outbox[i])) break;
+        sent++;
+    }
+    if (sent > 0) {
+        memmove(s_outbox, s_outbox + sent, (s_outbox_count - sent) * PK_MSG_LEN);
+        s_outbox_count -= sent;
+    }
+}
+
+/* Send everything the core has queued and empty the queue. Anything that will
+ * not go lands in the outbox for the next cycle. Called twice per window:
+ * once for alarms and reports, once for command replies. */
+static void send_queued(void) {
+    int n = pk_msg_count(&g_core);
+    for (int i = 0; i < n; i++) {
+        const char *m = pk_msg(&g_core, i);
+        esp_task_wdt_reset();
+        if (!pk_net_telegram_send(TG_TOKEN, TG_CHAT_ID, m)) {
+            ESP_LOGW(TAG, "Failed to send message %d, queueing to outbox", i);
+            outbox_push(m);
+        }
+    }
+    pk_msg_clear(&g_core);
+}
+
 /* The three that mean trouble are PANIC, TASK_WDT and BROWNOUT: the first two
  * say the previous run wedged, the third says the SuperMini regulator sagged
  * (which is also why BLE TX power is pinned to 8.5 dBm). USB is benign - it
@@ -198,6 +229,10 @@ void app_main(void) {
      * one, and it has to be restored before anything reads g_core.visit. */
     g_core.visit_n = pk_nvs_load_visits(g_core.visit, PK_MAX_VISITS);
 
+    /* Telegram's update_id cursor, so a reboot does not replay every command
+     * the bot has ever been sent. */
+    int32_t tg_offset = nvs_st.tg_offset;
+
     // 4. Perform Initial Poll
     ESP_LOGI(TAG, "Performing initial BLE poll...");
     static pk_ble_result_t s_ble_res;
@@ -276,71 +311,76 @@ void app_main(void) {
         // pk_tick is the sole owner of the day boundary and daily report
         pk_tick(&g_core, now);
 
-        // Collect new messages
+        /* One radio window per cycle, and everything that needs the network
+         * happens inside it: outbox, fresh alarms, commands, replies, and the
+         * twice-daily clock sync.
+         *
+         * Wi-Fi used to come up only when there was something to say, which on
+         * a healthy day was never. Collecting commands means coming up every
+         * cycle regardless. That is the real cost of answering questions: a
+         * radio window of a few seconds every five minutes, so roughly three
+         * more points of duty cycle on top of the BLE poll's seven. It buys
+         * the one thing a silence-by-default gateway cannot otherwise give
+         * you, which is a way to ask whether the silence is trustworthy. */
         int msg_count = pk_msg_count(&g_core);
-        if (msg_count > 0 || s_outbox_count > 0) {
-            ESP_LOGI(TAG, "%d new message(s), %d in outbox. Connecting Wi-Fi to send...",
-                     msg_count, s_outbox_count);
+        bool sync_due = (uint32_t)(now - last_sync) >= 12u * 3600u;
+        if (TG_ENABLED && pk_net_wifi_sta_start(WIFI_SSID, WIFI_PASS, 20000) == ESP_OK) {
+            if (msg_count || s_outbox_count)
+                ESP_LOGI(TAG, "%d new message(s), %d in outbox",
+                         msg_count, s_outbox_count);
+            send_outbox();
+            send_queued();
 
-            if (TG_ENABLED && pk_net_wifi_sta_start(WIFI_SSID, WIFI_PASS, 20000) == ESP_OK) {
-                // Send pending outbox messages first
-                int sent_outbox = 0;
-                for (int i = 0; i < s_outbox_count; i++) {
-                    esp_task_wdt_reset();
-                    if (pk_net_telegram_send(TG_TOKEN, TG_CHAT_ID, s_outbox[i])) {
-                        sent_outbox++;
-                    } else {
-                        break;
-                    }
-                }
-                if (sent_outbox > 0) {
-                    memmove(s_outbox, s_outbox + sent_outbox,
-                            (s_outbox_count - sent_outbox) * PK_MSG_LEN);
-                    s_outbox_count -= sent_outbox;
-                }
-
-                // Send fresh messages
-                for (int i = 0; i < msg_count; i++) {
-                    const char *m = pk_msg(&g_core, i);
-                    esp_task_wdt_reset();
-                    if (!pk_net_telegram_send(TG_TOKEN, TG_CHAT_ID, m)) {
-                        ESP_LOGW(TAG, "Failed to send message %d, queueing to outbox", i);
-                        outbox_push(m);
-                    }
-                }
-                pk_net_wifi_sta_stop();
-            } else if (TG_ENABLED) {
-                ESP_LOGE(TAG, "Wi-Fi connection failed, saving messages to outbox");
-                for (int i = 0; i < msg_count; i++) {
-                    outbox_push(pk_msg(&g_core, i));
-                }
+            /* Commands are collected AFTER the poll on purpose: every answer
+             * is then seconds old rather than up to a poll interval old, which
+             * is what lets the reply honestly say "checked just now".
+             *
+             * However many messages arrived, they get one answer. All of them
+             * mean the same thing, and the answer is a kilobyte. */
+            static pk_net_cmds_t cmds;
+            if (pk_net_telegram_get_updates(TG_TOKEN, TG_CHAT_ID, &tg_offset, &cmds)
+                && cmds.n) {
+                pk_host_t host = {
+                    .heap_free = (uint32_t)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
+                    .heap_min  = (uint32_t)heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL),
+                    .rssi_fountain = s_ble_res.rssi,
+                    .rssi_wifi     = (int8_t)pk_net_rssi(),
+                    .mtu           = s_ble_res.mtu,
+                    .pending_bytes = s_ble_res.pending_bytes,
+                    .stream_bytes  = s_ble_res.stream_bytes,
+                    .reset_reason  = reset_reason_name(esp_reset_reason()),
+                };
+                pk_command(&g_core, cmds.first, &host, now);
+                send_queued();
             }
-        }
-        pk_msg_clear(&g_core);
+            esp_task_wdt_reset();
 
-        /* Persist the visit list. The fountain's buffer is a recovery aid,
-         * not storage: the phone app can drain it at any moment, and a power
-         * cut like the one on 29.08.2026 must not be able to lose a day.
-         * This is a no-op on the cycles where nothing changed. */
-        pk_nvs_save_visits(g_core.visit, g_core.visit_n);
-
-        /* Re-sync the clock twice a day. The RTC drifts, and this gateway is
-         * meant to run for months without anyone touching it; left alone the
-         * daily report would slide off midnight. Bringing the radio up for two
-         * seconds also proves the network path still works on days when there
-         * is nothing to report - which, by design, is most days. */
-        if ((uint32_t)(now - last_sync) >= 12u * 3600u) {
-            if (pk_net_wifi_sta_start(WIFI_SSID, WIFI_PASS, 20000) == ESP_OK) {
+            /* Re-sync the clock twice a day. The RTC drifts, and this gateway
+             * is meant to run for months without anyone touching it; left
+             * alone the daily report would slide off midnight. */
+            if (sync_due) {
                 if (pk_net_sntp_sync(15000)) {
                     last_sync = (uint32_t)time(NULL);
                     ESP_LOGI(TAG, "clock re-synced");
                 } else {
                     ESP_LOGW(TAG, "clock re-sync failed, retrying next cycle");
                 }
-                pk_net_wifi_sta_stop();
+                esp_task_wdt_reset();
             }
-            esp_task_wdt_reset();
+            pk_net_wifi_sta_stop();
+        } else if (TG_ENABLED) {
+            ESP_LOGE(TAG, "Wi-Fi connection failed, saving messages to outbox");
+            for (int i = 0; i < msg_count; i++) outbox_push(pk_msg(&g_core, i));
+            pk_msg_clear(&g_core);
+        } else {
+            pk_msg_clear(&g_core);
         }
+
+        /* Persist the visit list. The fountain's buffer is a recovery aid,
+         * not storage: the phone app can drain it at any moment, and a power
+         * cut like the one on 29.08.2026 must not be able to lose a day.
+         * This is a no-op on the cycles where nothing changed. */
+        pk_nvs_save_visits(g_core.visit, g_core.visit_n);
 
         // Save alarm & day state to NVS on change
         pk_nvs_state_t cur_st = {
@@ -352,6 +392,7 @@ void app_main(void) {
             .day_no          = g_core.day_no,
             .last_report_day = g_core.last_report_day,
             .last_drink_ts   = g_core.last_drink_ts,
+            .tg_offset       = tg_offset,
         };
         pk_nvs_save(&cur_st);
 

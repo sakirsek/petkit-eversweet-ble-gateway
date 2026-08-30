@@ -74,6 +74,18 @@ class Visit(C.Structure):
     _fields_ = [("ts", C.c_uint32), ("sec", C.c_uint16)]
 
 
+class Host(C.Structure):
+    """Facts only the platform layer knows, for the health block of a reply.
+    Mirrors pk_host_t. Every field may be left at zero."""
+    _fields_ = [
+        ("heap_free", C.c_uint32), ("heap_min", C.c_uint32),
+        ("rssi_fountain", C.c_int8), ("rssi_wifi", C.c_int8),
+        ("mtu", C.c_uint16),
+        ("pending_bytes", C.c_uint32), ("stream_bytes", C.c_uint32),
+        ("reset_reason", C.c_char_p),
+    ]
+
+
 class Frame(C.Structure):
     _fields_ = [
         ("stream", C.c_uint8), ("cmd", C.c_uint8), ("typ", C.c_uint8),
@@ -110,6 +122,8 @@ _lib.pk_last_drink_ts.argtypes = [C.c_void_p]
 _lib.pk_last_drink_ts.restype = C.c_uint32
 _lib.pk_thirst_level.argtypes = [C.c_void_p]; _lib.pk_thirst_level.restype = C.c_int
 _lib.pk_report.argtypes = [C.c_void_p, C.c_uint32]
+_lib.pk_command.argtypes = [C.c_void_p, C.c_char_p, C.POINTER(Host), C.c_uint32]
+_lib.pk_command.restype = C.c_int
 # Outcome of a history read, mirroring the enum in petkit_core.h. The core
 # refuses to distinguish "no drinks" from "I could not read the drinks" unless
 # the transport tells it which one this was.
@@ -183,6 +197,12 @@ class Core:
 
     def report(self, now: int):
         _lib.pk_report(self._p, now)
+
+    def command(self, text: str, now: int, host: Host = None) -> bool:
+        """Handle one Telegram command and queue the reply. Replies join the
+        normal outbound queue but are not counted as alerts."""
+        hp = C.byref(host) if host is not None else None
+        return bool(_lib.pk_command(self._p, text.encode("utf-8"), hp, now))
 
     def messages(self):
         n = _lib.pk_msg_count(self._p)

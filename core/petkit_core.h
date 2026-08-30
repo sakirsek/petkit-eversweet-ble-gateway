@@ -29,7 +29,9 @@
 
 #define PK_MAX_VISITS 128   /* rolling window, ~2 days of records     */
 #define PK_MAX_MSG      8   /* messages producible in a single round  */
-#define PK_MSG_LEN   1600   /* Telegram allows 4096; reports fit here */
+#define PK_MSG_LEN   2048   /* Telegram allows 4096. 1600 fitted a report;
+                             * /status carries two days plus health, so it
+                             * needs more. Both still truncate honestly. */
 #define PK_FRAME_MAX  288   /* negotiated MTU is 158, so this is ample */
 
 /* How long after a visit ENDS before the fountain has written the record and
@@ -138,6 +140,20 @@ typedef struct {
                                    * the escalation message for context       */
 } pk_cfg_t;
 
+/* Facts only the platform layer knows, for the health block of a reply. The
+ * core has the poll counters and the clock; the radio, the heap and the reset
+ * reason live outside it. Passing them in keeps the core free of platform
+ * headers and keeps that block testable on the PC. Any field may be zero. */
+typedef struct {
+    uint32_t heap_free, heap_min;   /* bytes of internal heap             */
+    int8_t   rssi_fountain;         /* BLE, dBm                           */
+    int8_t   rssi_wifi;             /* dBm                                */
+    uint16_t mtu;                   /* ATT MTU in effect on the last poll */
+    uint32_t pending_bytes;         /* last history read: promised        */
+    uint32_t stream_bytes;          /* last history read: delivered       */
+    const char *reset_reason;       /* why the current run started        */
+} pk_host_t;
+
 /* ------------------------------------------------------------------- state */
 typedef struct {
     pk_cfg_t   cfg;
@@ -208,6 +224,21 @@ PK_API void pk_poll_fail(pk_t *p, uint32_t now);
  * pk_tick is the SOLE owner of the day boundary - it must be called after
  * every pk_poll_ok / pk_poll_fail, and it is what emits the daily report. */
 PK_API void pk_tick(pk_t *p, uint32_t now);
+
+/* Handle one command from Telegram and queue the reply.
+ *
+ * There is exactly one answer and every command produces it, `text` included
+ * only so the platform layer can log what was asked. Returns 1 always.
+ *
+ * Replies are queued alongside alarms but are NOT counted as alerts, because
+ * the daily receipt's number has to keep meaning "things I decided to tell you
+ * about", not "times you asked me something".
+ *
+ * `host` may be NULL; only the health block reads it. The reply is built from
+ * the state as of the last poll, so the platform layer should collect commands
+ * AFTER polling, which makes every answer seconds old rather than minutes. */
+PK_API int         pk_command(pk_t *p, const char *text,
+                              const pk_host_t *host, uint32_t now);
 
 PK_API int         pk_msg_count(const pk_t *p);
 PK_API const char *pk_msg(const pk_t *p, int i);

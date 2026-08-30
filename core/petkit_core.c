@@ -58,20 +58,36 @@ static void fmt_clock(uint32_t ts, int32_t tz, char *out, int cap) {
     snprintf(out, cap, "%02d:%02d", c.hour, c.min);
 }
 
-/* Queue a message. Silently drops if full - never overflows. */
-static void msg(pk_t *p, const char *fmt, ...) {
+/* Queue a message. Silently drops if full - never overflows.
+ *
+ * `counted` separates the two kinds of outbound message. An alarm or a report
+ * is something the gateway DECIDED to say and belongs in the daily receipt's
+ * count; a reply to /status is something the user asked for and does not. If
+ * replies counted, asking three questions would make the receipt claim three
+ * alerts on a day that had none, which is precisely the sort of quiet
+ * inaccuracy that number was fixed for in the first place. */
+static void msg_out(pk_t *p, int counted, const char *fmt, va_list ap) {
     if (p->msg_n >= PK_MAX_MSG) return;
-    va_list ap;
-    va_start(ap, fmt);
     vsnprintf(p->msg[p->msg_n], PK_MSG_LEN, fmt, ap);
-    va_end(ap);
     p->msg_n++;
-    p->messages_sent++;   /* lifetime */
-    p->day_messages++;    /* today only - reset by day_rollover. This is the
-                           * figure the daily health receipt prints. It was
-                           * reset and printed but never incremented, so every
-                           * report ever sent claimed "0 alerts sent today",
-                           * including 26.08.2026 which had sent four. */
+    if (counted) {
+        p->messages_sent++;   /* lifetime */
+        p->day_messages++;    /* today only - reset by day_rollover. This is
+                               * the figure the daily health receipt prints. It
+                               * was reset and printed but never incremented,
+                               * so every report ever sent claimed "0 alerts
+                               * sent today", including 26.08.2026 which had
+                               * sent four. */
+    }
+}
+
+static void msg(pk_t *p, const char *fmt, ...) {
+    va_list ap; va_start(ap, fmt); msg_out(p, 1, fmt, ap); va_end(ap);
+}
+
+/* An answer to a question, not an alert. See msg_out. */
+static void reply(pk_t *p, const char *fmt, ...) {
+    va_list ap; va_start(ap, fmt); msg_out(p, 0, fmt, ap); va_end(ap);
 }
 
 /* ================================================================ frames */
@@ -429,15 +445,20 @@ static void check_history(pk_t *p, uint32_t now) {
 /* Emit the summary for one civil day. The day is passed in rather than taken
  * from `now`, because the report is normally produced by the first tick AFTER
  * midnight - using `now` would date yesterday's drinking as today. */
-static void emit_report(pk_t *p, int32_t day_no, uint32_t now) {
-    pk_civil_t c;
-    pk_civil((uint32_t)day_no * 86400u, 0, &c);   /* midnight of the reported day */
-    const pk_state_t *s = &p->last;
+/* One civil day's slice of the rolling window, plus the figures every summary
+ * quotes. Shared by the nightly report and by /status, which is the point: the
+ * answer you get when you ask and the answer that arrives at midnight are
+ * built from the same arithmetic, so they cannot drift apart. */
+typedef struct {
+    const pk_visit_t *v;
+    int      n;
+    uint32_t total, longest, longest_ts, longest_gap;
+} pk_day_t;
 
-    /* Find this day's slice of the rolling multi-day window. add_visit keeps
-     * the list chronological, so one day is always a contiguous range - no
-     * need to copy the records out, which on the ESP32-C3 would put another
-     * kilobyte on a task stack that also holds the 1.6 KB message buffer. */
+/* add_visit keeps the list chronological, so a day is always a contiguous
+ * range and nothing has to be copied out - on the C3 a copy would be another
+ * kilobyte on a task stack that already carries the message buffer. */
+static void day_stats(const pk_t *p, int32_t day_no, pk_day_t *d) {
     int lo = 0, hi = 0;
     for (int i = 0; i < p->visit_n; i++) {
         pk_civil_t vc; pk_civil(p->visit[i].ts, p->cfg.tz_offset_sec, &vc);
@@ -445,25 +466,79 @@ static void emit_report(pk_t *p, int32_t day_no, uint32_t now) {
         if (hi == lo) lo = i;
         hi = i + 1;
     }
-    const pk_visit_t *day = p->visit + lo;
-    int day_n = hi - lo;
-
-    uint32_t total = 0, longest = 0, longest_ts = 0;
-    for (int i = 0; i < day_n; i++) {
-        total += day[i].sec;
-        if (day[i].sec > longest) { longest = day[i].sec; longest_ts = day[i].ts; }
+    d->v = p->visit + lo;
+    d->n = hi - lo;
+    d->total = d->longest = d->longest_ts = d->longest_gap = 0;
+    for (int i = 0; i < d->n; i++) {
+        d->total += d->v[i].sec;
+        if (d->v[i].sec > d->longest) {
+            d->longest = d->v[i].sec;
+            d->longest_ts = d->v[i].ts;
+        }
     }
     /* Longest gap - the figure we accumulate to tune the thirst threshold. */
-    uint32_t longest_gap = 0;
-    for (int i = 1; i < day_n; i++) {
-        uint32_t g = day[i].ts - day[i - 1].ts;
-        if (g > longest_gap) longest_gap = g;
+    for (int i = 1; i < d->n; i++) {
+        uint32_t g = d->v[i].ts - d->v[i - 1].ts;
+        if (g > d->longest_gap) d->longest_gap = g;
     }
+}
+
+/* The time-and-duration column. Cut short HONESTLY if the buffer runs out: a
+ * quietly shortened list reads exactly like a complete one, and this whole
+ * design rests on the messages being trustworthy rather than merely present. */
+static int append_visits(const pk_t *p, const pk_day_t *d,
+                         char *buf, int k, int cap) {
+    int shown = 0;
+    for (int i = 0; i < d->n && k < cap - 300; i++, shown++) {
+        char h[16], dur[32];
+        fmt_clock(d->v[i].ts, p->cfg.tz_offset_sec, h, sizeof h);
+        fmt_duration(d->v[i].sec, dur, sizeof dur);
+        k += snprintf(buf + k, (size_t)(cap - k), "%s%s   %s", i ? "\n" : "", h, dur);
+    }
+    if (shown < d->n)
+        k += snprintf(buf + k, (size_t)(cap - k),
+                      "\n… %d more not shown", d->n - shown);
+    return k;
+}
+
+/* One day as a collapsed block, for /status. The nightly report renders its
+ * own day expanded, because there the day IS the message. */
+static int append_day_block(const pk_t *p, int32_t day_no, const char *label,
+                            int is_today, char *buf, int k, int cap) {
+    pk_day_t d;
+    day_stats(p, day_no, &d);
+    if (d.n == 0) {
+        return k + snprintf(buf + k, (size_t)(cap - k),
+                            "<blockquote><b>%s</b> · %s</blockquote>\n", label,
+                            is_today ? "no drinks yet" : "nothing recorded");
+    }
+    char tot[32], gap[32];
+    fmt_duration(d.total, tot, sizeof tot);
+    fmt_duration(d.longest_gap, gap, sizeof gap);
+    k += snprintf(buf + k, (size_t)(cap - k),
+                  "<blockquote expandable><b>%s</b> · %d %s · %s\n"
+                  "longest gap %s\n",
+                  label, d.n, d.n == 1 ? "drink" : "drinks", tot, gap);
+    k = append_visits(p, &d, buf, k, cap);
+    return k + snprintf(buf + k, (size_t)(cap - k), "</blockquote>\n");
+}
+
+static void emit_report(pk_t *p, int32_t day_no, uint32_t now) {
+    pk_civil_t c;
+    pk_civil((uint32_t)day_no * 86400u, 0, &c);   /* midnight of the reported day */
+    const pk_state_t *s = &p->last;
+
+    pk_day_t dd;
+    day_stats(p, day_no, &dd);
+    int day_n = dd.n;
+    uint32_t total = dd.total, longest = dd.longest;
+    uint32_t longest_ts = dd.longest_ts, longest_gap = dd.longest_gap;
 
     char buf[PK_MSG_LEN];
     int k = 0;
     k += snprintf(buf + k, sizeof buf - k,
-                  "📊 <b>Daily summary · %02d.%02d.%04d</b>\n\n", c.day, c.mon, c.year);
+                  "📊 <b>Daily summary · %02d.%02d.%04d</b>\n\n",
+                  c.day, c.mon, c.year);
 
     if (day_n == 0 && p->day_hist_short) {
         /* The exact sentence that went out for 29.08.2026, when the feed
@@ -490,19 +565,7 @@ static void emit_report(pk_t *p, int32_t day_no, uint32_t now) {
                       day_n, day_n == 1 ? "drink" : "drinks",
                       tot, lng, at, gap);
         k += snprintf(buf + k, sizeof buf - k, "<blockquote expandable>");
-        int shown = 0;
-        for (int i = 0; i < day_n && k < (int)sizeof buf - 300; i++, shown++) {
-            char h[16], d[32];
-            fmt_clock(day[i].ts, p->cfg.tz_offset_sec, h, sizeof h);
-            fmt_duration(day[i].sec, d, sizeof d);
-            k += snprintf(buf + k, sizeof buf - k, "%s%s   %s", i ? "\n" : "", h, d);
-        }
-        /* Say so when the list is cut short. A quietly shortened list reads as
-         * a complete one, and this whole design depends on the messages being
-         * trustworthy rather than merely present. */
-        if (shown < day_n)
-            k += snprintf(buf + k, sizeof buf - k,
-                          "\n… %d more not shown", day_n - shown);
+        k = append_visits(p, &dd, buf, k, (int)sizeof buf);
         k += snprintf(buf + k, sizeof buf - k, "</blockquote>\n");
         if (p->day_hist_short)
             k += snprintf(buf + k, sizeof buf - k,
@@ -543,6 +606,146 @@ static void emit_report(pk_t *p, int32_t day_no, uint32_t now) {
              uptime / 3600, (uptime % 3600) / 60, p->day_messages);
 
     msg(p, "%s", buf);
+}
+
+/* ================================================================ commands */
+
+/* There is exactly one command, and everything maps to it.
+ *
+ * The first design had four: status, today, report, health. Three of them were
+ * slices of the nightly summary, which is a menu to memorise in exchange for
+ * nothing - the answer costs a five-minute wait either way, so there is no
+ * reason to make you choose in advance which part of it you wanted. One reply
+ * carries the lot, with the detail behind expandable quotes so the message
+ * stays short until you open it.
+ *
+ * That also means an unknown command is not an error. Whatever you type, you
+ * get the picture, which is the only sensible behaviour for a gateway whose
+ * normal state is silence: an unanswered message is indistinguishable from a
+ * dead board, and that confusion is the entire reason this feature exists. */
+static void cmd_status(pk_t *p, const pk_host_t *h, uint32_t now) {
+    const pk_state_t *s = &p->last;
+    char t[16];
+    fmt_clock(now, p->cfg.tz_offset_sec, t, sizeof t);
+
+    char buf[PK_MSG_LEN];
+    const int cap = (int)sizeof buf;
+    int k = 0;
+
+    k += snprintf(buf + k, (size_t)(cap - k),
+                  "🚰 <b>Status</b> · <i>%s</i>\n", t);
+
+    /* Everything currently wrong, gathered in one place. An empty list is the
+     * point of the whole message: it is the difference between "nothing has
+     * been reported" and "I looked just now and there is nothing to report". */
+    char open[640];
+    int w = 0;
+    open[0] = 0;
+#define WORRY(...) do { \
+        if (w < (int)sizeof open - 160) \
+            w += snprintf(open + w, sizeof open - (size_t)w, __VA_ARGS__); \
+    } while (0)
+    if (!s->valid)                     WORRY("\n· I have no reading from the fountain yet");
+    if (p->unreachable)                WORRY("\n· the fountain is not answering");
+    if (s->valid && !s->power)         WORRY("\n· the fountain is switched off");
+    if (s->valid && s->warn_no_water)  WORRY("\n· the reservoir is empty");
+    if (s->valid && s->warn_fault)     WORRY("\n· the fountain reports a fault");
+    if (p->thirst_level)
+        WORRY("\n· a %u-hour thirst alarm is open",
+              p->thirst_level == 2 ? p->cfg.thirst_escalate_sec / 3600
+                                   : p->cfg.thirst_sec / 3600);
+    if (p->hist_short_streak)
+        WORRY("\n· the drinking history is only arriving in part, so anything "
+              "I say about drinking is unreliable");
+#undef WORRY
+
+    k += snprintf(buf + k, (size_t)(cap - k), "%s%s\n",
+                  w ? "⚠️ <b>Open right now:</b>" : "✅ <b>Nothing is wrong.</b>",
+                  w ? open : "");
+
+    if (p->last_drink_ts) {
+        char at[16], dur[32], ago[32];
+        fmt_clock(p->last_drink_ts, p->cfg.tz_offset_sec, at, sizeof at);
+        uint16_t sec = 0;
+        for (int i = 0; i < p->visit_n; i++)
+            if (p->visit[i].ts == p->last_drink_ts) sec = p->visit[i].sec;
+        fmt_duration(sec, dur, sizeof dur);
+        fmt_duration(now > p->last_drink_ts ? now - p->last_drink_ts : 0,
+                     ago, sizeof ago);
+        k += snprintf(buf + k, (size_t)(cap - k),
+                      "🐱 <b>Last drink</b> %s · %s <i>(%s ago)</i>\n",
+                      at, dur, ago);
+    } else {
+        k += snprintf(buf + k, (size_t)(cap - k),
+                      "🐱 <b>No drink on record yet.</b>\n");
+    }
+
+    if (s->valid) {
+        k += snprintf(buf + k, (size_t)(cap - k),
+                      "<blockquote><b>Fountain:</b> %s · %s · pump %s · %s\n"
+                      "<b>Water:</b> %s\n"
+                      "<b>Battery:</b> %u%% (%u mV) · <b>Filter:</b> %u%%"
+                      "</blockquote>\n",
+                      s->power ? "on" : "off", mode_name(s->mode),
+                      s->pump_running ? "running" : "stopped", psu_name(s->psu),
+                      s->warn_no_water ? "EMPTY" : "present",
+                      s->battery_pct, s->battery_mv, s->filter_pct);
+    }
+
+    /* Today and yesterday, both collapsed. Yesterday is here so that losing
+     * the nightly report - deleted, missed, sent while the radio was down -
+     * is recoverable by asking, rather than being gone. */
+    k = append_day_block(p, p->day_no, "Today so far", 1, buf, k, cap);
+    k = append_day_block(p, p->day_no - 1, "Yesterday", 0, buf, k, cap);
+
+    uint32_t up = now - p->started_ts;
+    k += snprintf(buf + k, (size_t)(cap - k),
+                  "<blockquote expandable><b>System health</b>\n"
+                  "polls %u / %u today · %u / %u since start\n"
+                  "%u hr %u min uptime, started after %s\n"
+                  "%u alerts sent today\n",
+                  p->day_polls_ok, p->day_polls_total,
+                  p->polls_ok, p->polls_total,
+                  up / 3600, (up % 3600) / 60,
+                  (h && h->reset_reason) ? h->reset_reason : "an unrecorded reset",
+                  p->day_messages);
+    if (h) {
+        /* The line that would have caught 29.08.2026 days earlier: the byte
+         * count the fountain promised against the byte count that arrived. */
+        if (h->pending_bytes)
+            k += snprintf(buf + k, (size_t)(cap - k),
+                          "last history read %u of %u bytes · %s\n",
+                          (unsigned)h->stream_bytes, (unsigned)h->pending_bytes,
+                          h->stream_bytes >= h->pending_bytes
+                              ? "complete" : "SHORT, records held back");
+        else
+            k += snprintf(buf + k, (size_t)(cap - k),
+                          "last history read: nothing was pending\n");
+        k += snprintf(buf + k, (size_t)(cap - k),
+                      "radio: fountain %d dBm (mtu %u) · wifi %d dBm\n"
+                      "memory: %u KB free, %u KB at its lowest\n",
+                      (int)h->rssi_fountain, (unsigned)h->mtu, (int)h->rssi_wifi,
+                      (unsigned)(h->heap_free / 1024),
+                      (unsigned)(h->heap_min / 1024));
+    }
+    /* The tag closes the last line of the block, not a blank one. */
+    if (k > 0 && buf[k - 1] == '\n') k--;
+    k += snprintf(buf + k, (size_t)(cap - k), "</blockquote>\n");
+
+    /* "just now" is not a figure of speech. Commands are collected in the same
+     * radio window as the poll and immediately after it, so these numbers are
+     * seconds old rather than up to a poll interval old. */
+    snprintf(buf + k, (size_t)(cap - k),
+             "<i>Checked just now · next check in %u minutes.</i>",
+             p->cfg.poll_sec / 60);
+
+    reply(p, "%s", buf);
+}
+
+int pk_command(pk_t *p, const char *text, const pk_host_t *host, uint32_t now) {
+    (void)text;   /* every command is the same command - see cmd_status */
+    cmd_status(p, host, now);
+    return 1;
 }
 
 /* Public entry point: report the civil day that `now` falls in. */

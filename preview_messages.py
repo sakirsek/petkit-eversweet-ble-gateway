@@ -75,6 +75,34 @@ Opening the PetKit app once will clear the backlog.</blockquote>
 
     ("history readable again", """✅ <b>Drinking history readable again</b> · <i>03:43</i>"""),
 
+    ("reply to /status", """🚰 <b>Status</b> · <i>17:02</i>
+✅ <b>Nothing is wrong.</b>
+🐱 <b>Last drink</b> 15:39 · 1 min 20 sec <i>(1 hr 23 min ago)</i>
+<blockquote><b>Fountain:</b> on · Continuous · pump running · adapter
+<b>Water:</b> present
+<b>Battery:</b> 100% (4214 mV) · <b>Filter:</b> 60%</blockquote>
+<blockquote expandable><b>Today so far</b> · 3 drinks · 5 min 53 sec
+longest gap 6 hr 25 min
+03:38   3 min 30 sec
+10:03   1 min 3 sec
+15:39   1 min 20 sec</blockquote>
+<blockquote expandable><b>Yesterday</b> · 6 drinks · 7 min 19 sec
+longest gap 7 hr 8 min
+00:46   2 min 13 sec
+06:24   1 min 8 sec
+13:32   48 sec
+19:02   1 min 31 sec
+21:40   44 sec
+23:11   55 sec</blockquote>
+<blockquote expandable><b>System health</b>
+polls 204 / 204 today · 1132 / 1140 since start
+96 hr 12 min uptime, started after power-on
+0 alerts sent today
+last history read 48 of 48 bytes · complete
+radio: fountain -40 dBm (mtu 158) · wifi -66 dBm
+memory: 63 KB free, 41 KB at its lowest</blockquote>
+<i>Checked just now · next check in 5 minutes.</i>"""),
+
     ("filter threshold", """🧹 <b>Filter dropped below 20%</b>
 <i>now 19% · you will need to replace it soon</i>"""),
 

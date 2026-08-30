@@ -2,6 +2,7 @@
 #include "pk_net.h"
 #include <string.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <time.h>
 #include "freertos/FreeRTOS.h"
 #include "freertos/event_groups.h"
@@ -15,6 +16,8 @@
 #include "esp_http_client.h"
 #include "esp_crt_bundle.h"
 #include "esp_heap_caps.h"
+#include "cJSON.h"
+#include "petkit_core.h"   /* PK_MSG_LEN, so the buffers cannot be outgrown */
 
 static const char *TAG = "PK_NET";
 
@@ -198,8 +201,17 @@ static int url_encode(const char *src, char *dst, size_t dst_cap) {
     return (int)k;
 }
 
-static char s_post_buf[5120];
-static char s_enc_text[4096];
+/* Big enough for the longest message the core can produce with every single
+ * byte percent-encoded, plus the form fields around it. Sized from PK_MSG_LEN
+ * rather than guessed, because the overflow path here throws the message away
+ * and a gateway that silently drops what it decided to say is worse than one
+ * that never spoke. Real messages encode at about 1.7x, not 3x, so this is
+ * mostly headroom - and it is still smaller than the two buffers it replaced,
+ * because the encoder now writes straight into the form body.
+ *
+ * getUpdates borrows the same buffer for its response. Nothing else is in
+ * flight while either call runs. */
+static char s_post_buf[PK_MSG_LEN * 3 + 96];
 static char s_url_buf[256];
 
 int pk_net_rssi(void) { return s_ap_rssi; }
@@ -211,18 +223,27 @@ bool pk_net_telegram_send(const char *token, const char *chat_id, const char *ht
         return false;
     }
 
-    if (url_encode(html_text, s_enc_text, sizeof(s_enc_text)) < 0) {
-        ESP_LOGE(TAG, "URL encode buffer overflow for Telegram message");
-        return false;
-    }
-
     int post_len = snprintf(s_post_buf, sizeof(s_post_buf),
-                            "chat_id=%s&text=%s&parse_mode=HTML&disable_web_page_preview=true",
-                            chat_id, s_enc_text);
-    if (post_len >= (int)sizeof(s_post_buf)) {
+                            "chat_id=%s&text=", chat_id);
+    if (post_len < 0 || post_len >= (int)sizeof(s_post_buf)) {
         ESP_LOGE(TAG, "Post buffer overflow");
         return false;
     }
+    int enc = url_encode(html_text, s_post_buf + post_len,
+                         sizeof(s_post_buf) - (size_t)post_len);
+    if (enc < 0) {
+        ESP_LOGE(TAG, "URL encode buffer overflow for Telegram message");
+        return false;
+    }
+    post_len += enc;
+    int tail = snprintf(s_post_buf + post_len,
+                        sizeof(s_post_buf) - (size_t)post_len,
+                        "&parse_mode=HTML&disable_web_page_preview=true");
+    if (tail < 0 || post_len + tail >= (int)sizeof(s_post_buf)) {
+        ESP_LOGE(TAG, "Post buffer overflow");
+        return false;
+    }
+    post_len += tail;
 
     snprintf(s_url_buf, sizeof(s_url_buf), "https://api.telegram.org/bot%s/sendMessage", token);
 
@@ -272,4 +293,114 @@ bool pk_net_telegram_send(const char *token, const char *chat_id, const char *ht
     }
 
     return success;
+}
+
+/* ------------------------------------------------------- receiving commands */
+
+/* Reuses s_post_buf as the response body. Nothing else is in flight when this
+ * runs (the sends are finished) and a second 5 KB static buffer is 5 KB the
+ * BLE stack would rather have. */
+static int http_collect(esp_http_client_handle_t c, char *buf, int cap) {
+    int total = 0;
+    while (total < cap - 1) {
+        int r = esp_http_client_read(c, buf + total, cap - 1 - total);
+        if (r <= 0) break;
+        total += r;
+    }
+    buf[total] = 0;
+    return total;
+}
+
+bool pk_net_telegram_get_updates(const char *token, const char *chat_id,
+                                 int32_t *offset, pk_net_cmds_t *out) {
+    if (!token || !token[0] || !chat_id || !chat_id[0] || !offset || !out)
+        return false;
+    out->n = 0;
+    out->first[0] = 0;
+
+    /* timeout=0 is a plain poll, not a long poll. Holding the socket open
+     * would mean holding the radio open, and the whole cycle is built around
+     * the radio being off. limit=8 caps the response so it cannot outgrow the
+     * buffer no matter how long the gateway was away. */
+    snprintf(s_url_buf, sizeof(s_url_buf),
+             "https://api.telegram.org/bot%s/getUpdates"
+             "?offset=%ld&limit=8&timeout=0", token, (long)*offset);
+
+    esp_http_client_config_t config = {
+        .url = s_url_buf,
+        .method = HTTP_METHOD_GET,
+        .crt_bundle_attach = esp_crt_bundle_attach,
+        .timeout_ms = 15000,
+    };
+    esp_http_client_handle_t client = esp_http_client_init(&config);
+    if (!client) return false;
+
+    bool ok = false;
+    int len = 0;
+    if (esp_http_client_open(client, 0) == ESP_OK) {
+        esp_http_client_fetch_headers(client);
+        if (esp_http_client_get_status_code(client) == 200)
+            len = http_collect(client, s_post_buf, sizeof(s_post_buf));
+        else
+            ESP_LOGW(TAG, "getUpdates HTTP %d",
+                     esp_http_client_get_status_code(client));
+        esp_http_client_close(client);
+    } else {
+        ESP_LOGW(TAG, "getUpdates could not open the connection");
+    }
+    esp_http_client_cleanup(client);
+    if (len <= 0) return false;
+
+    cJSON *root = cJSON_Parse(s_post_buf);
+    if (!root) {
+        ESP_LOGW(TAG, "getUpdates returned unparseable JSON (%d bytes)", len);
+        return false;
+    }
+    cJSON *result = cJSON_GetObjectItem(root, "result");
+    if (cJSON_IsArray(result)) {
+        ok = true;
+        cJSON *u;
+        cJSON_ArrayForEach(u, result) {
+            cJSON *uid = cJSON_GetObjectItem(u, "update_id");
+            if (cJSON_IsNumber(uid) && (int32_t)uid->valuedouble >= *offset)
+                *offset = (int32_t)uid->valuedouble + 1;   /* advance ALWAYS */
+
+            cJSON *m = cJSON_GetObjectItem(u, "message");
+            if (!m) m = cJSON_GetObjectItem(u, "edited_message");
+            if (!m) continue;
+
+            cJSON *chat = cJSON_GetObjectItem(m, "chat");
+            cJSON *cid = chat ? cJSON_GetObjectItem(chat, "id") : NULL;
+            if (!cJSON_IsNumber(cid)) continue;
+            /* Compared as numbers, never by formatting the id into text.
+             * CONFIG_NEWLIB_NANO_FORMAT is on, so snprintf has no 64-bit
+             * conversions: "%lld" produced the literal "ld", which matched
+             * nothing, so every message the owner sent was thrown away as a
+             * stranger's while the cursor advanced past it. The bot consumed
+             * its commands and answered none of them, silently, because the
+             * drop path is meant to be silent. Same trap as the cycle timing
+             * log in main.c, which carries the same warning. */
+            if ((long long)cid->valuedouble != strtoll(chat_id, NULL, 10)) {
+                /* Someone else found the bot. Say nothing to them at all: a
+                 * reply, even a refusal, confirms the bot is live. */
+                ESP_LOGW(TAG, "ignoring a message from another chat");
+                continue;
+            }
+
+            /* Any text at all, not just a leading slash. The owner talking
+             * to their own bot deserves an answer whatever they typed, and
+             * silence is the one reply that cannot be told apart from a dead
+             * board. */
+            cJSON *txt = cJSON_GetObjectItem(m, "text");
+            if (!cJSON_IsString(txt) || !txt->valuestring[0]) continue;
+            if (out->n++ == 0) {
+                strncpy(out->first, txt->valuestring, PK_NET_CMD_LEN - 1);
+                out->first[PK_NET_CMD_LEN - 1] = 0;
+            }
+        }
+    }
+    cJSON_Delete(root);
+    if (out->n) ESP_LOGI(TAG, "%d message(s) from the owner, first: %s",
+                         out->n, out->first);
+    return ok;
 }

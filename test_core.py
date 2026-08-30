@@ -716,6 +716,91 @@ core23.tick(t)
 eq("the third speaks",
    len([m for m in core23.take() if "cannot read" in m]), 1)
 
+print("\n=== 23. THE ONE COMMAND ===")
+# A gateway whose normal state is silence cannot be told apart from a dead one
+# without asking it something. There is one question, and its answer carries
+# everything: what is wrong now, when the cat last drank, today, yesterday, and
+# the gateway's own vital signs.
+#
+# It began as four commands. Three of them were slices of the nightly summary,
+# which is a menu to memorise in exchange for nothing: the answer costs the
+# same five-minute wait whichever slice you ask for.
+cmd_cfg = pk.default_cfg()
+cmd_cfg.thirst_sec = 8 * 3600
+cmd_cfg.normal_gap_sec = 416 * 60
+HOST = pk.Host(heap_free=63 * 1024, heap_min=41 * 1024, rssi_fountain=-40,
+               rssi_wifi=-66, mtu=158, pending_bytes=48, stream_bytes=48,
+               reset_reason=b"power-on")
+YESTERDAY = [(T(29, 6, 24), 68), (T(29, 13, 32), 48), (T(29, 23, 11), 55)]
+TODAY = [(T(30, 3, 38), 210), (T(30, 10, 3), 63), (T(30, 15, 39), 80)]
+
+core24 = pk.Core(cmd_cfg, T(30, 0, 10))
+core24.poll_ok(healthy, YESTERDAY + TODAY, T(30, 17, 0), pk.HIST_OK)
+core24.drop()
+
+core24.command("/status", T(30, 17, 2), HOST)
+st = core24.take()
+eq("one reply per command", len(st), 1)
+m = st[0]
+ok("it names the last drink", "15:39" in m)
+ok("and how long ago that was", "1 hr 23 min ago" in m)
+ok("a healthy gateway says so plainly", "Nothing is wrong" in m)
+ok("the reading is fresh, and says so", "Checked just now" in m)
+ok("today is in the answer", "Today so far" in m and "10:03" in m)
+ok("and so is yesterday", "Yesterday" in m and "23:11" in m)
+ok("today is labelled as partial, not as a finished day",
+   "Daily summary" not in m)
+ok("the gateway's own vitals are there too",
+   "System health" in m and "48 of 48 bytes" in m)
+ok("including why it started", "power-on" in m)
+ok("the detail is collapsed, not dumped",
+   m.count("blockquote expandable") >= 3)
+ok("and the whole answer fits the buffer", len(m.encode("utf-8")) < 2048)
+
+# Whatever you type, you get the picture. Answering a typo with silence is the
+# one reply this gateway must never give: silence is also what a dead board
+# sends, and telling those two apart is the entire point of the feature.
+for typed in ("/status@PetkitGatewayBot", "/today", "/health", "/wat", "/start"):
+    core24.command(typed, T(30, 17, 3), HOST)
+    ok("%-24s is answered with the same picture" % typed,
+       "Status" in core24.take()[0])
+
+# The receipt counts what the gateway decided to say. Questions are not that.
+# The cat drinks again before midnight so the day boundary has nothing to
+# report but the summary itself.
+NIGHT = Fountain(YESTERDAY + TODAY + [(T(30, 23, 10), 55)])
+rep = [x for x in run(core24, NIGHT, T(31, 0, 4), T(31, 0, 4))
+       if "Daily summary" in x]
+eq("the day still closed with its report", len(rep), 1)
+ok("and six questions did not become six alerts",
+   "0 alerts sent today" in rep[0])
+
+# Whatever is wrong must be in the answer, because the answer is what someone
+# reads when they are already worried.
+core25 = pk.Core(cmd_cfg, T(30, 8, 0))
+dry4 = pk.state_decode(bytes.fromhex(CLEAR)); dry4.warn_no_water = 1
+core25.poll_ok(dry4, [(T(29, 22, 0), 60)], T(30, 8, 0), pk.HIST_OK)
+core25.drop()
+core25.command("/status", T(30, 8, 1), HOST)
+m = core25.take()[0]
+ok("an empty reservoir is in the answer", "reservoir is empty" in m)
+ok("so the headline is not 'nothing is wrong'", "Nothing is wrong" not in m)
+
+# The 29.08 failure, asked about directly rather than waiting to be told.
+core26 = pk.Core(cmd_cfg, T(30, 8, 0))
+core26.poll_ok(healthy, [(T(29, 22, 0), 60)], T(30, 8, 0), pk.HIST_OK)
+core26.poll_ok(healthy, [(T(29, 22, 0), 60)], T(30, 8, 5), pk.HIST_SHORT)
+core26.take()
+core26.command("/status", T(30, 8, 6), HOST)
+m = core26.take()[0]
+ok("a short feed makes the drinking answer untrustworthy, and says so",
+   "unreliable" in m)
+
+# A driver with no platform facts to offer still owes an answer.
+core26.command("/status", T(30, 8, 7))
+m = core26.take()[0]
+ok("no host facts still gets an answer", "Status" in m and "Today so far" in m)
+
 print("\n" + "=" * 60)
 print("RESULT: %d passed, %d failed" % (PASS, FAIL))
 sys.exit(1 if FAIL else 0)

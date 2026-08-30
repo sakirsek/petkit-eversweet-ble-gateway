@@ -97,6 +97,49 @@ never left wondering whether something resolved itself:
 That is the complete set. Fourteen message types, and on a normal day you get
 exactly one of them: the summary.
 
+### Asking it questions
+
+Silence is the design, and that creates one problem the design cannot solve by
+itself: a gateway that has nothing to say and a gateway that is dead look
+exactly the same from the outside. So you can ask it, with `/status`:
+
+- what is wrong right now, or that nothing is
+- when the cat last drank, and how long ago that was
+- the fountain: power, mode, pump, water, battery, filter
+- today's drinks so far, and yesterday's in full
+- its own vital signs: polls, uptime, reset reason, radio, memory, and how
+  many bytes of history the last read asked for against how many arrived
+
+One command, because everything after the first line is one tap away behind a
+collapsed quote, and because there was never a reason to make you choose in
+advance which part of the answer you wanted. Anything you type gets the same
+reply, typos included: an unanswered message looks exactly like a dead board,
+which is the confusion this feature exists to end.
+
+Replies arrive on the **next poll**, so within five minutes. That is
+deliberate: commands are collected in the same radio window as everything
+else, straight after the BLE poll, which costs a few seconds of Wi-Fi per
+cycle instead of holding the radio open. It also means the numbers in a reply
+are seconds old rather than minutes, which is why it can honestly say
+"checked just now".
+
+Answers are not counted as alerts in the daily receipt. Asking three questions
+on a quiet day still leaves it reading `0 alerts sent today`, because that
+number means "things I decided to tell you about".
+
+Only the configured `telegram_chat_id` is answered. Anyone else who finds the
+bot gets no reply at all, not even a refusal: a refusal still confirms there
+is something live at the other end.
+
+Register the command menu once, from the PC:
+
+```bash
+python tools/set_commands.py
+```
+
+That is the same thing BotFather's `/setcommands` does. It only adds the menu
+button in the chat; the gateway needs nothing from it and never reads it.
+
 ### Try it with no fountain, no phone and no bot
 
 ```bash

@@ -27,6 +27,10 @@ typedef struct {
     int32_t  day_no;
     int32_t  last_report_day;
     uint32_t last_drink_ts;
+    /* Telegram's update_id cursor. Persisted because a reboot with a stale
+     * cursor replays every command the bot ever received, which on a gateway
+     * that answers questions means a burst of stale answers. */
+    int32_t  tg_offset;
 } pk_nvs_state_t;
 
 esp_err_t pk_nvs_init(void);

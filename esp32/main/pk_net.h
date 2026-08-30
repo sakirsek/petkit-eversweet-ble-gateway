@@ -27,4 +27,32 @@ uint32_t pk_net_heap_phase(void);
 
 bool pk_net_telegram_send(const char *token, const char *chat_id, const char *html_text);
 
+/* What the configured chat said since the last poll, collapsed to a count and
+ * the first line of it.
+ *
+ * There is one command and every message maps to it, so five taps on the menu
+ * button deserve one answer, not five identical kilobyte-long ones. The text
+ * is kept only so the log line says what was typed. */
+#define PK_NET_CMD_LEN 48
+typedef struct {
+    int  n;
+    char first[PK_NET_CMD_LEN];
+} pk_net_cmds_t;
+
+/* Fetch pending Telegram messages and report what the owner sent.
+ *
+ * `offset` is Telegram's update_id cursor. It is read and then advanced past
+ * everything the server returned, INCLUDING messages we ignore, and the caller
+ * persists it: without that a reboot replays every old command, and with a
+ * chat filter but no advance a stranger's message would block the queue
+ * forever. Pass it through NVS, not memory.
+ *
+ * Only messages whose chat id matches `chat_id` are returned. Everything else
+ * is dropped without a reply - anyone who learns the bot's name can message
+ * it, and this gateway answers exactly one chat.
+ *
+ * Returns true if the call succeeded (out->n may still be 0). */
+bool pk_net_telegram_get_updates(const char *token, const char *chat_id,
+                                 int32_t *offset, pk_net_cmds_t *out);
+
 #endif /* PK_NET_H */

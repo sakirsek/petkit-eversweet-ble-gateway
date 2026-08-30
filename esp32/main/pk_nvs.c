@@ -44,6 +44,7 @@ esp_err_t pk_nvs_load(pk_nvs_state_t *st) {
     nvs_get_i32(h, "day_no", &st->day_no);
     nvs_get_i32(h, "rep_day", &st->last_report_day);
     nvs_get_u32(h, "drink_ts", &st->last_drink_ts);
+    nvs_get_i32(h, "tg_offset", &st->tg_offset);
 
     nvs_close(h);
 
@@ -78,6 +79,7 @@ esp_err_t pk_nvs_save(const pk_nvs_state_t *st) {
     nvs_set_i32(h, "day_no", st->day_no);
     nvs_set_i32(h, "rep_day", st->last_report_day);
     nvs_set_u32(h, "drink_ts", st->last_drink_ts);
+    nvs_set_i32(h, "tg_offset", st->tg_offset);
 
     err = nvs_commit(h);
     nvs_close(h);
