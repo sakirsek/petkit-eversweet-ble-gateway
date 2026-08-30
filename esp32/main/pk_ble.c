@@ -6,6 +6,7 @@
 #include "freertos/task.h"
 #include "freertos/semphr.h"
 #include "esp_log.h"
+#include "esp_task_wdt.h"
 #include "esp_bt.h"
 #include "esp_heap_caps.h"
 #include "nimble/nimble_port.h"
@@ -39,6 +40,26 @@ static int s_frame_count = 0;
 static uint8_t s_stream_blob[MAX_STREAM_BLOB_LEN];
 static int s_stream_blob_len = 0;
 static bool s_collecting_stream = false;
+/* Every CMD 68 byte this poll received, even ones the window below has since
+ * dropped. This is the number that gets compared with the CMD 212 promise. */
+static volatile int  s_stream_total = 0;
+static volatile bool s_window_slid = false;
+static volatile int  s_stream82_frames = 0;
+
+/* The fountain's own request for a chunk acknowledgement, captured in the
+ * NimBLE host callback and answered from the polling task. Writing to GATT
+ * from inside the host callback is how one bad poll becomes a wedged stack. */
+static volatile bool    s_ack_req = false;
+static volatile uint8_t s_ack_seq = 0;
+
+/* How long to keep collecting. The old code waited a flat 4 s and took
+ * whatever had arrived, which was correct only while everything fitted in one
+ * chunk. We now wait for the byte count CMD 212 promised; this is the ceiling
+ * on that wait, and QUIET_MS is how long with no new bytes means "that is all
+ * you are getting" (the fountain re-asks every 3 s, so 7 s is two misses). */
+#define STREAM_SLICE_MS    250
+#define STREAM_TIMEOUT_MS 20000
+#define STREAM_QUIET_MS    7000
 
 /* Connection & discovery state */
 static uint8_t s_target_mac[6];
@@ -245,11 +266,42 @@ static int gap_event(struct ble_gap_event *event, void *arg) {
                     }
 
                     if (s_collecting_stream && parsed.stream && parsed.cmd == 68) {
-                        if (s_stream_blob_len + parsed.len <= (int)sizeof(s_stream_blob)) {
+                        s_stream_total += parsed.len;
+                        /* Keep the NEWEST bytes. A long backlog arrives oldest
+                         * first and the core only needs the last two days, so
+                         * when the buffer fills we drop from the front rather
+                         * than refusing the rest - refusing would freeze
+                         * last_drink_ts, which is the exact failure this whole
+                         * change is about. Dropping stays 6-byte aligned so a
+                         * record is never cut in half. */
+                        if (parsed.len <= (int)sizeof(s_stream_blob)) {
+                            int over = s_stream_blob_len + parsed.len
+                                       - (int)sizeof(s_stream_blob);
+                            if (over > 0) {
+                                int drop = ((over + 5) / 6) * 6;
+                                if (drop > s_stream_blob_len) drop = s_stream_blob_len;
+                                memmove(s_stream_blob, s_stream_blob + drop,
+                                        (size_t)(s_stream_blob_len - drop));
+                                s_stream_blob_len -= drop;
+                                s_window_slid = true;
+                            }
                             memcpy(s_stream_blob + s_stream_blob_len,
                                    parsed.payload, parsed.len);
                             s_stream_blob_len += parsed.len;
                         }
+                    }
+                    /* Seen once the stream is exhausted, carrying a copy of the
+                     * last chunk. Counted, not collected: adding it would
+                     * double-count bytes against the CMD 212 promise. */
+                    if (s_collecting_stream && parsed.stream && parsed.cmd == 82)
+                        s_stream82_frames++;
+
+                    /* "Chunk delivered, acknowledge me." The fountain repeats
+                     * this every 3 s and sends nothing further until answered.
+                     * Record it; the polling task decides whether to reply. */
+                    if (!parsed.stream && parsed.cmd == 67 && parsed.typ == 1) {
+                        s_ack_seq = parsed.seq;
+                        s_ack_req = true;
                     }
                 }
             }
@@ -335,18 +387,23 @@ esp_err_t pk_ble_deinit(void) {
     return ESP_OK;
 }
 
-/* The ONLY commands this gateway is ever allowed to transmit. This is a
+/* The only REQUESTS this gateway is ever allowed to transmit. This is a
  * whitelist, not a blacklist, on purpose: anything not listed here cannot go
  * out even by accident.
  *
- * Two families must never be sent, and both do permanent damage:
+ * Two must never be sent, and both do permanent damage:
  *   CMD 73        rewrites deviceId + secret on the fountain and can lock the
  *                 official PetKit app out of it for good. Only a physical
  *                 factory reset recovers.
- *   CMD 67 / 69   acknowledge the history stream. The device then marks those
- *                 records synced and the app can never show them again.
+ *   CMD 69        the stream END acknowledgement. This is the one that
+ *                 retires records so the phone app can never show them again,
+ *                 and nothing here needs it.
  * Commands 220/221/222/225/226 change device state; this project is read-only
  * by design, so they are excluded too.
+ *
+ * CMD 67 does not travel this path at all, because it is a REPLY to the
+ * fountain's own request rather than a request of ours. It goes out from
+ * send_chunk_ack() below, and it destroys nothing - see the note there.
  */
 static bool cmd_is_allowed(uint8_t cmd) {
     switch (cmd) {
@@ -381,6 +438,32 @@ static bool send_cmd(uint16_t conn, uint16_t tx_h, uint8_t cmd, uint8_t typ,
         return false;
     }
     vTaskDelay(pdMS_TO_TICKS(dwell_ms));
+    return true;
+}
+
+/* Answer the fountain's chunk request so it will send the next chunk.
+ *
+ * Shape taken from the wire: the fountain sends `fa fc fd 43 01 d8 00 00 fb`,
+ * a request (typ 1) with an empty payload, and the convention throughout this
+ * protocol is that a reply echoes the seq with typ 2.
+ *
+ * This does NOT consume. Measured 30.08.2026 by reading the pending counter on
+ * the same connection either side of three acknowledgements: 48 bytes before,
+ * 48 bytes after, while the request seq advanced 241 -> 242 -> 243, so the
+ * fountain was answering rather than ignoring us. Retiring records is CMD 69's
+ * job and this project never sends it. It is still kept out of send_cmd's
+ * request whitelist, because it is a reply to the fountain rather than a
+ * request of ours. */
+static bool send_chunk_ack(uint16_t conn, uint16_t tx_h, uint8_t seq) {
+    uint8_t frame_buf[PK_FRAME_MAX];
+    uint8_t pl = 0x01;
+    int n = pk_frame_build(PK_CMD_STREAMACK, 2, &pl, 1, seq, frame_buf);
+    if (n <= 0) return false;
+    int rc = ble_gattc_write_no_rsp_flat(conn, tx_h, frame_buf, (uint16_t)n);
+    if (rc != 0) {
+        ESP_LOGW(TAG, "chunk ack (seq %u) failed: rc=%d", seq, rc);
+        return false;
+    }
     return true;
 }
 
@@ -578,27 +661,89 @@ bool pk_ble_poll(const char *mac_str, const uint8_t *secret8, pk_ble_result_t *r
     }
 
     // Step G: Fetch history stream if pending > 0
+    res->pending_bytes = (uint32_t)(pending > 0 ? pending : 0);
     if (pending > 0) {
         s_stream_blob_len = 0;
+        s_stream_total = 0;
+        s_stream82_frames = 0;
+        s_window_slid = false;
+        s_ack_req = false;
         s_collecting_stream = true;
 
         // CMD 80: setStreamSetting(window=32, mtu=158)
         static const uint8_t stream_start_pl[8] = {
             0x00, 0x00, 0x00, 0x20, 0x00, 0x00, 0x00, 0x9E
         };
-        send_cmd(s_conn_handle, s_tx_val_handle, 80, 1, stream_start_pl, 8, 11, 4000);
+        send_cmd(s_conn_handle, s_tx_val_handle, 80, 1, stream_start_pl, 8, 11,
+                 STREAM_SLICE_MS);
+
+        /* Collect until we have every byte CMD 212 promised, rather than for a
+         * fixed 4 s. The old wait was not a transfer-speed problem - the whole
+         * first chunk lands in about a millisecond - it was that there was no
+         * second chunk to wait for unless we acknowledged the first. */
+        int last_len = -1, acked_at = -1, quiet_ms = 0;
+        for (int waited = 0; waited < STREAM_TIMEOUT_MS; waited += STREAM_SLICE_MS) {
+            vTaskDelay(pdMS_TO_TICKS(STREAM_SLICE_MS));
+            esp_task_wdt_reset();
+
+            int have = s_stream_total;
+            if (have != last_len) { last_len = have; quiet_ms = 0; }
+            else                  { quiet_ms += STREAM_SLICE_MS; }
+
+            /* We have everything CMD 212 promised. Nothing more to unlock, so
+             * do not answer the request at all - on a normal day the whole
+             * backlog is one chunk and this exits immediately, costing the
+             * poll nothing. */
+            if (have >= pending) break;
+
+            /* Short. The fountain is holding the rest behind its flow control,
+             * so answer it. One reply per chunk, and only once that chunk's
+             * bytes are in hand: the request repeats every 3 s and answering a
+             * repeat could advance its cursor past a chunk we never received. */
+            if (s_ack_req && have > 0 && have > acked_at) {
+                uint8_t seq = s_ack_seq;
+                s_ack_req = false;
+                if (send_chunk_ack(s_conn_handle, s_tx_val_handle, seq)) {
+                    acked_at = have;
+                    quiet_ms = 0;
+                    if (res->acks < 255) res->acks++;
+                }
+                continue;
+            }
+
+            if (quiet_ms >= STREAM_QUIET_MS) break;
+        }
         s_collecting_stream = false;
 
-        // Verify stream blob integrity (multiple of 6 bytes)
-        if (s_stream_blob_len > 0 && (s_stream_blob_len % 6 == 0)) {
+        /* Decode the whole records we have. A trailing partial record used to
+         * throw the entire read away; keeping the good part and flagging the
+         * read is strictly better, because the flag is what stops the core
+         * calling an unread day a dry one. */
+        res->stream_bytes = (uint32_t)s_stream_total;
+        if (s_stream_blob_len > 0) {
             res->visit_count = pk_history_decode(s_stream_blob, s_stream_blob_len,
                                                  res->visits, PK_BLE_MAX_VISITS);
-            ESP_LOGI(TAG, "Decoded %d history visits from stream", res->visit_count);
-        } else if (s_stream_blob_len > 0) {
-            ESP_LOGW(TAG, "Stream blob length %d not a multiple of 6 (packet dropped)",
-                     s_stream_blob_len);
         }
-        // NEVER send CMD 67 or CMD 69 (Ack)
+        res->hist_short = (s_stream_total < pending ||
+                           s_stream_total % 6 != 0) ? 1 : 0;
+
+        ESP_LOGI(TAG, "history: %d of %ld bytes, %d visits, %u ack(s)%s%s",
+                 s_stream_total, (long)pending, res->visit_count,
+                 (unsigned)res->acks, s_window_slid ? ", window slid" : "",
+                 res->hist_short ? "  SHORT" : "");
+        if (res->hist_short) {
+            /* The failure this whole change exists for. On 29.08.2026 it was
+             * this exact condition and it printed nothing at all. Reaching it
+             * now means the flow-control replies did not unlock the rest, so
+             * the assumption that they would is the thing to go and check. */
+            ESP_LOGW(TAG, "SHORT history read - the fountain is holding records "
+                          "back after %u acknowledgement(s). One 512-byte chunk "
+                          "is 85 records; syncing the phone app clears it.",
+                     (unsigned)res->acks);
+        }
+        if (s_stream82_frames)
+            ESP_LOGI(TAG, "%d CMD 82 tail frame(s) seen (counted, not collected)",
+                     s_stream82_frames);
     }
 
     /* Sample the radio-on half of the cycle here: NimBLE is fully up, the

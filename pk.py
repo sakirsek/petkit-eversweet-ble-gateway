@@ -98,7 +98,7 @@ _lib.pk_history_decode.restype = C.c_int
 _lib.pk_sync_pending.argtypes = [C.c_char_p, C.c_int]
 _lib.pk_sync_pending.restype = C.c_int32
 _lib.pk_poll_ok.argtypes = [C.c_void_p, C.POINTER(State), C.POINTER(Visit),
-                            C.c_int, C.c_uint32]
+                            C.c_int, C.c_int, C.c_uint32]
 _lib.pk_poll_fail.argtypes = [C.c_void_p, C.c_uint32]
 _lib.pk_tick.argtypes = [C.c_void_p, C.c_uint32]
 _lib.pk_msg_count.argtypes = [C.c_void_p]; _lib.pk_msg_count.restype = C.c_int
@@ -110,6 +110,10 @@ _lib.pk_last_drink_ts.argtypes = [C.c_void_p]
 _lib.pk_last_drink_ts.restype = C.c_uint32
 _lib.pk_thirst_level.argtypes = [C.c_void_p]; _lib.pk_thirst_level.restype = C.c_int
 _lib.pk_report.argtypes = [C.c_void_p, C.c_uint32]
+# Outcome of a history read, mirroring the enum in petkit_core.h. The core
+# refuses to distinguish "no drinks" from "I could not read the drinks" unless
+# the transport tells it which one this was.
+HIST_OK, HIST_SHORT = 0, 1
 
 
 # ------------------------------------------------------------ free functions
@@ -164,12 +168,12 @@ class Core:
         self.cfg = cfg
         _lib.pk_init(self._p, C.byref(cfg), now)
 
-    def poll_ok(self, state, visits, now: int):
+    def poll_ok(self, state, visits, now: int, hist: int = HIST_OK):
         arr = (Visit * max(1, len(visits)))()
         for i, (ts, sec) in enumerate(visits):
             arr[i].ts, arr[i].sec = ts, sec
         sp = C.byref(state) if state is not None else None
-        _lib.pk_poll_ok(self._p, sp, arr, len(visits), now)
+        _lib.pk_poll_ok(self._p, sp, arr, len(visits), hist, now)
 
     def poll_fail(self, now: int):
         _lib.pk_poll_fail(self._p, now)

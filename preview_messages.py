@@ -67,6 +67,14 @@ No response for 15 minutes (3 consecutive polls failed).
 
     ("back online", """✅ <b>Fountain is back</b> · <i>15:20 · 28 min outage</i>"""),
 
+    ("history unreadable", """📡 <b>I cannot read the drinking history</b>
+The fountain is answering, but it is holding records back and showing me only part of them.
+<blockquote>Anything I say about drinking is unreliable until this clears, so I will not raise a thirst alarm meanwhile.
+Opening the PetKit app once will clear the backlog.</blockquote>
+<i>07:28</i>"""),
+
+    ("history readable again", """✅ <b>Drinking history readable again</b> · <i>03:43</i>"""),
+
     ("filter threshold", """🧹 <b>Filter dropped below 20%</b>
 <i>now 19% · you will need to replace it soon</i>"""),
 

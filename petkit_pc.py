@@ -10,13 +10,22 @@ core is carried over unchanged.
 Poll sequence (verified against the vendor app's own traffic):
     connect -> 213 ping -> 86 auth -> 210 state -> 212 pending counter
             -> if pending: 80 to start the stream, collect 68 packets
-            -> DO NOT ACKNOWLEDGE (no 67/69) -> disconnect
+            -> disconnect
 
-Not acknowledging is essential. If we ack, the device marks those records
-synced and the PetKit phone app can never show them again. Reading without
-acking was verified on the device: the records are returned, the pending
-counter stays put, and the app still displays them. The cost is that the same
-records keep arriving, so the core deduplicates on timestamp.
+CMD 67 is not a cleanup command, it is the stream's flow control, and that
+distinction cost this project a day of wrong alarms. The fountain hands over
+one 512-byte chunk - 85 whole records - and then asks for an acknowledgement
+every three seconds and sends nothing further until it gets one. A reader that
+never acknowledges therefore works perfectly right up to 85 unread records and
+then freezes on that same chunk forever, which is exactly what happened on
+29.08.2026.
+
+Answering it destroys nothing. Measured 30.08.2026 by reading the pending
+counter on the same connection either side of three acknowledgements: 48 bytes
+before, 48 after, while the request seq advanced 241 -> 242 -> 243. Consuming
+is CMD 69's job, and this gateway never sends CMD 69, so the phone app keeps
+every record. We answer only when the read is short, which on a normal day is
+never - the whole backlog arrives in the first chunk.
 
   python petkit_pc.py           # run the gateway
   python petkit_pc.py --once    # single poll, print the result, exit
@@ -115,15 +124,31 @@ class Telegram:
             self.q.task_done()
 
 
+# How long to keep collecting stream packets. The old code waited a flat 4 s
+# and took whatever had turned up, which was fine while everything fitted in
+# one chunk and silently wrong the moment it did not. We now wait for the byte
+# count CMD 212 promised, and this is only the ceiling on that wait.
+STREAM_TIMEOUT = 20.0
+# The fountain re-asks for its chunk acknowledgement every 3 s, so going this
+# long with no new bytes means it has nothing more to give us.
+STREAM_QUIET = 7.0
+
+
 # --------------------------------------------------------------- single poll
 async def poll():
-    """One poll round. Returns (state, [visits], error_message)."""
+    """One poll round. Returns (state, [visits], hist, error_message).
+
+    `hist` is pk.HIST_OK when the stream delivered every byte CMD 212 said was
+    pending, and pk.HIST_SHORT when it delivered fewer. That distinction is the
+    whole point: without it the core cannot tell "the cat did not drink" from
+    "I was not shown the drinks", and on 29.08.2026 it spent a day reporting
+    the first while living the second."""
     dev = await BleakScanner.find_device_by_address(MAC, timeout=15.0)
     if not dev:
         # Most common cause by far: the PetKit phone app is connected. The
         # fountain has a single connection slot and stops advertising entirely
         # while the app holds it, so this looks identical to "powered off".
-        return None, [], "device not found while scanning"
+        return None, [], pk.HIST_SHORT, "device not found while scanning"
 
     frames = []
 
@@ -141,9 +166,10 @@ async def poll():
             # Whitelist, not blacklist: nothing outside this set can leave,
             # even by accident. CMD 73 permanently rewrites the deviceId and
             # secret and can lock the PetKit app out of the fountain for good;
-            # CMD 67/69 acknowledge the history stream and make the app lose
-            # those records forever. 220/221/222/225/226 change device state
-            # and this gateway is read-only by design.
+            # CMD 69 retires the history records and makes the app lose them
+            # forever. 220/221/222/225/226 change device state and this
+            # gateway is read-only by design. CMD 67 is a reply rather than a
+            # request and goes out through ack_chunk() instead.
             cmd = raw[3]
             if cmd not in ALLOWED_CMDS:
                 raise RuntimeError(
@@ -152,10 +178,20 @@ async def poll():
             await client.write_gatt_char(TX, raw, response=False)
             await asyncio.sleep(wait)
 
+        async def ack_chunk(seq):
+            # The one frame outside ALLOWED_CMDS this driver transmits. It is a
+            # reply (typ 2) echoing the fountain's own request seq rather than a
+            # request of ours, and it consumes nothing: measured 30.08.2026,
+            # pending 48 bytes before three acknowledgements and 48 after, with
+            # the request seq advancing 241 -> 242 -> 243 each time. CMD 69,
+            # which does consume, stays forbidden.
+            await client.write_gatt_char(
+                TX, pk.frame_build(67, 2, b"\x01", seq), response=False)
+
         await send(pk.frame_build(213, 1, bytes([0, 0]), 1), 1.5)   # wake
         await send(pk.frame_build(86, 1, SECRET8, 2), 2.0)          # authenticate
         if not [f for f in frames if f["cmd"] == 86 and f["payload"][:1] == b"\x01"]:
-            return None, [], "no authentication reply"
+            return None, [], pk.HIST_SHORT, "no authentication reply"
 
         await send(pk.frame_build(210, 1, bytes([0, 0]), 3), 1.5)   # state
         mark = len(frames)
@@ -177,23 +213,62 @@ async def poll():
             if f["cmd"] == 212 and not f["stream"]:
                 pending = max(0, pk.sync_pending(f["payload"]))
 
-        visits = []
+        visits, hist, acks = [], pk.HIST_OK, 0
         if pending > 0:
             mark2 = len(frames)
-            await send(STREAM_START, 4.0)
-            blob = b"".join(f["payload"] for f in frames[mark2:]
-                            if f["stream"] and f["cmd"] == 68)
+            await client.write_gatt_char(TX, STREAM_START, response=False)
+
+            def collected():
+                return b"".join(f["payload"] for f in frames[mark2:]
+                                if f["stream"] and f["cmd"] == 68)
+
+            blob = b""
+            acked_at, last_event = -1, time.monotonic()
+            deadline = last_event + STREAM_TIMEOUT
+            while time.monotonic() < deadline:
+                await asyncio.sleep(0.25)
+                got = collected()
+                if len(got) > len(blob):
+                    blob, last_event = got, time.monotonic()
+
+                # Everything CMD 212 promised is here. Nothing left to unlock,
+                # so do not answer the request at all: on a normal day the
+                # whole backlog is one chunk and this exits immediately.
+                if len(blob) >= pending:
+                    break
+
+                # Short, so the fountain is holding the rest behind its flow
+                # control. Answer it, once per chunk and only after that
+                # chunk's bytes are in hand: the request repeats every 3 s and
+                # answering a repeat could advance its cursor past a chunk we
+                # never received.
+                if blob and len(blob) > acked_at:
+                    req = [f for f in frames[mark2:]
+                           if f["cmd"] == 67 and f["typ"] == 1 and not f["stream"]]
+                    if req:
+                        await ack_chunk(req[-1]["seq"])
+                        acked_at, acks = len(blob), acks + 1
+                        last_event = time.monotonic()
+                        continue
+
+                if time.monotonic() - last_event > STREAM_QUIET:
+                    break
+
             visits = pk.history_decode(blob)
-            # No ack (CMD 67/69) on purpose - see the module docstring.
-            jlog({"type": "history", "pending": pending, "decoded": len(visits),
-                  "raw": blob.hex()})
+            hist = pk.HIST_OK if len(blob) >= pending else pk.HIST_SHORT
+            jlog({"type": "history", "pending": pending, "received": len(blob),
+                  "decoded": len(visits), "acks": acks,
+                  "short": hist == pk.HIST_SHORT, "raw": blob.hex()})
+            if hist == pk.HIST_SHORT:
+                log("history SHORT: %d of %d bytes (%d records of %d)"
+                    % (len(blob), pending, len(visits), pending // 6), "!!!")
 
         if state is None:
-            return None, visits, "could not decode state"
-        return state, visits, None
+            return None, visits, hist, "could not decode state"
+        return state, visits, hist, None
 
     except Exception as e:
-        return None, [], "%s: %s" % (type(e).__name__, e)
+        return None, [], pk.HIST_SHORT, "%s: %s" % (type(e).__name__, e)
     finally:
         try:
             await client.disconnect()
@@ -209,7 +284,7 @@ async def loop(core, tg):
     await asyncio.sleep(POLL_SEC)
     while True:
         t0 = time.time()
-        state, visits, err = await poll()
+        state, visits, hist, err = await poll()
         now = int(time.time())
 
         if err:
@@ -217,13 +292,14 @@ async def loop(core, tg):
             log("poll failed: %s" % err, "!!!")
             jlog({"type": "poll", "ok": False, "error": err})
         else:
-            core.poll_ok(state, visits, now)
-            log("poll ok  %s  | %d new records, %d visits today"
-                % (state, len(visits), core.visit_count), "PLL")
+            core.poll_ok(state, visits, now, hist)
+            log("poll ok  %s  | %d new records, %d visits today%s"
+                % (state, len(visits), core.visit_count,
+                   " [SHORT READ]" if hist == pk.HIST_SHORT else ""), "PLL")
             jlog({"type": "poll", "ok": True, "new": len(visits),
                   "today": core.visit_count, "battery": state.battery_pct,
                   "filter": state.filter_pct, "no_water": state.warn_no_water,
-                  "fault": state.warn_fault})
+                  "fault": state.warn_fault, "short": hist == pk.HIST_SHORT})
 
         core.tick(now)
         for m in core.take():
@@ -254,13 +330,13 @@ async def main():
         % (POLL_SEC // 60, cfg.thirst_sec // 3600,
            CFG.get("report_time", "23:59"), cfg.tz_offset_sec / 3600.0), "RUN")
 
-    state, visits, err = await poll()
+    state, visits, hist, err = await poll()
     now = int(time.time())
     if err:
         core.poll_fail(now)
         log("first poll failed: %s" % err, "!!!")
     else:
-        core.poll_ok(state, visits, now)
+        core.poll_ok(state, visits, now, hist)
         core.drop()   # swallow startup alarms; only send the banner below
         tg.send("🚰 <b>Fountain monitoring active</b>\n"
                 "<blockquote><b>Status:</b> %s · %s mode\n"
@@ -281,12 +357,14 @@ async def main():
 
 
 async def once():
-    state, visits, err = await poll()
+    state, visits, hist, err = await poll()
     if err:
         print("ERROR:", err)
         return 1
     print("state  :", state)
-    print("history:", len(visits), "record(s)")
+    print("history:", len(visits), "record(s)%s"
+          % ("  [SHORT READ - the fountain held records back]"
+             if hist == pk.HIST_SHORT else ""))
     for ts, sec in visits:
         print("   %s  %d sec"
               % (datetime.datetime.fromtimestamp(ts).strftime("%H:%M:%S"), sec))

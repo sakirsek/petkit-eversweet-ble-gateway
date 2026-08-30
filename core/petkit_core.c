@@ -224,6 +224,7 @@ static void day_rollover(pk_t *p, int32_t new_day, uint32_t now) {
     p->day_no = new_day;
     p->day_polls_total = p->day_polls_ok = p->day_messages = 0;
     p->day_pump_peak = 0;
+    p->day_hist_short = 0;
 
     /* The visit list is NOT emptied here. Because we never acknowledge the
      * stream, the device replays its whole buffer on every poll, so anything
@@ -318,6 +319,14 @@ static void check_thirst(pk_t *p, uint32_t now) {
     if (!p->baseline_ready || !p->last_drink_ts) return;
     if (device_unhealthy(p)) return;
 
+    /* And stay quiet while the history feed is short. A short read means the
+     * fountain is holding records back, so last_drink_ts is a floor rather
+     * than a fact, and "the cat has not drunk for 8 hours" is a claim we are
+     * in no position to make. This is the guard 29.08.2026 did not have: the
+     * feed had frozen at 28.08 23:21 and the gateway sent an 8-hour alarm and
+     * then a 12-hour one, both about a cat that was drinking normally. */
+    if (p->hist_short_streak) return;
+
     /* Do not ask "has it been 8 hours". Ask "has it been 8 hours AND would a
      * drink that ended the dry spell already be visible to me".
      *
@@ -384,6 +393,37 @@ static void check_thirst(pk_t *p, uint32_t now) {
     }
 }
 
+/* Is the history feed itself healthy?
+ *
+ * CMD 212 says how many bytes are waiting and the stream says how many we
+ * got. When those disagree the fountain is holding records back, and the
+ * honest report is about the gateway, not about the cat. Three polls of
+ * grace before saying so, because one short read can be one dropped packet.
+ *
+ * This message is deliberately actionable. The backlog only clears when
+ * something acknowledges it, and the nightly drain is the thing that
+ * normally does; if that has not been happening, opening the phone app once
+ * has the same effect. Saying "something is wrong" without saying what to do
+ * would just be a nicer-sounding version of the silence that caused this. */
+static void check_history(pk_t *p, uint32_t now) {
+    char t[16]; fmt_clock(now, p->cfg.tz_offset_sec, t, sizeof t);
+
+    if (p->hist_short_streak >= 3 && !p->a_hist_blind) {
+        p->a_hist_blind = 1;
+        msg(p, "📡 <b>I cannot read the drinking history</b>\n"
+               "The fountain is answering, but it is holding records back "
+               "and showing me only part of them.\n"
+               "<blockquote>Anything I say about drinking is unreliable "
+               "until this clears, so I will not raise a thirst alarm "
+               "meanwhile.\n"
+               "Opening the PetKit app once will clear the backlog."
+               "</blockquote>\n<i>%s</i>", t);
+    } else if (!p->hist_short_streak && p->a_hist_blind) {
+        p->a_hist_blind = 0;
+        msg(p, "✅ <b>Drinking history readable again</b> · <i>%s</i>", t);
+    }
+}
+
 /* ========================================================== daily report */
 
 /* Emit the summary for one civil day. The day is passed in rather than taken
@@ -425,7 +465,17 @@ static void emit_report(pk_t *p, int32_t day_no, uint32_t now) {
     k += snprintf(buf + k, sizeof buf - k,
                   "📊 <b>Daily summary · %02d.%02d.%04d</b>\n\n", c.day, c.mon, c.year);
 
-    if (day_n == 0) {
+    if (day_n == 0 && p->day_hist_short) {
+        /* The exact sentence that went out for 29.08.2026, when the feed
+         * had been frozen since the 28th at 23:21 and the cat had drunk
+         * all day. An empty list is only news if the list could have
+         * been filled, and that day it could not. */
+        k += snprintf(buf + k, sizeof buf - k,
+                      "⚠️ <b>No drinks recorded, but I was not "
+                      "reading properly today.</b>\n"
+                      "<i>The fountain held records back, so this is a "
+                      "gap in my reading, not a fact about the cat.</i>\n");
+    } else if (day_n == 0) {
         k += snprintf(buf + k, sizeof buf - k,
                       "🐱 <b>No drinks recorded today.</b>\n");
     } else {
@@ -454,6 +504,11 @@ static void emit_report(pk_t *p, int32_t day_no, uint32_t now) {
             k += snprintf(buf + k, sizeof buf - k,
                           "\n… %d more not shown", day_n - shown);
         k += snprintf(buf + k, sizeof buf - k, "</blockquote>\n");
+        if (p->day_hist_short)
+            k += snprintf(buf + k, sizeof buf - k,
+                          "⚠️ <i>Incomplete: the fountain held "
+                          "records back at least once today, so drinks may "
+                          "be missing from this list.</i>\n");
     }
 
     if (s->valid) {
@@ -499,7 +554,7 @@ void pk_report(pk_t *p, uint32_t now) {
 /* ============================================================ public API */
 
 void pk_poll_ok(pk_t *p, const pk_state_t *s,
-                const pk_visit_t *fresh, int n, uint32_t now) {
+                const pk_visit_t *fresh, int n, int hist, uint32_t now) {
     p->polls_total++;
     p->polls_ok++;
     p->day_polls_total++;
@@ -534,9 +589,20 @@ void pk_poll_ok(pk_t *p, const pk_state_t *s,
     uint32_t prev_drink = p->last_drink_ts;
     for (int i = 0; i < n; i++) add_visit(p, &fresh[i]);
 
+    /* A short read is not "no drinks". Track the streak so check_thirst can
+     * hold its tongue and check_history can say what is actually wrong. */
+    if (hist == PK_HIST_SHORT) {
+        if (p->hist_short_streak < 255) p->hist_short_streak++;
+        p->day_hist_short = 1;
+    } else {
+        p->hist_short_streak = 0;
+    }
+
     /* The first successful poll establishes the baseline; until then the
-     * thirst alarm stays silent. */
-    if (!p->baseline_ready) p->baseline_ready = 1;
+     * thirst alarm stays silent. A short read is not a baseline: it would set
+     * last_drink_ts to the oldest thing the fountain still has and then start
+     * counting hours from it. */
+    if (!p->baseline_ready && hist == PK_HIST_OK) p->baseline_ready = 1;
 
     /* The cat drank again -> clear any open thirst alarm. This is the one
      * drink-related message we do send, because it closes an alarm the user
@@ -557,6 +623,7 @@ void pk_poll_ok(pk_t *p, const pk_state_t *s,
     }
 
     if (p->last.valid) { check_critical(p, now); check_thresholds(p); }
+    check_history(p, now);
     check_thirst(p, now);
 }
 

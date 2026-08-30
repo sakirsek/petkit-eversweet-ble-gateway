@@ -190,6 +190,14 @@ void app_main(void) {
     if (nvs_st.last_report_day > 0) g_core.last_report_day = nvs_st.last_report_day;
     if (nvs_st.last_drink_ts > 0) g_core.last_drink_ts = nvs_st.last_drink_ts;
 
+    /* Restore the visit list. This used to live only in RAM, on the theory
+     * that a restarted gateway could always rebuild the day from the
+     * fountain's buffer. That theory has two holes: the phone app can drain
+     * that buffer, and once WE acknowledge it the records are gone from the
+     * fountain by our own hand. So the flash copy is now the authoritative
+     * one, and it has to be restored before anything reads g_core.visit. */
+    g_core.visit_n = pk_nvs_load_visits(g_core.visit, PK_MAX_VISITS);
+
     // 4. Perform Initial Poll
     ESP_LOGI(TAG, "Performing initial BLE poll...");
     static pk_ble_result_t s_ble_res;
@@ -198,7 +206,8 @@ void app_main(void) {
     now = (uint32_t)time(NULL);
 
     if (ok) {
-        pk_poll_ok(&g_core, &s_ble_res.state, s_ble_res.visits, s_ble_res.visit_count, now);
+        pk_poll_ok(&g_core, &s_ble_res.state, s_ble_res.visits, s_ble_res.visit_count,
+                   s_ble_res.hist_short ? PK_HIST_SHORT : PK_HIST_OK, now);
         pk_msg_drop(&g_core); // Swallow startup alarms so we don't spam (and do not count them as sent)
 
         // Send startup banner
@@ -230,6 +239,13 @@ void app_main(void) {
         ESP_LOGW(TAG, "First poll failed: %s (will retry next cycle)", s_ble_res.error);
     }
 
+    /* Persist what the first poll recovered before waiting five minutes for
+     * the loop to do it. A board that reboots more often than that - a flaky
+     * supply, a power cut that comes back in stages - would otherwise never
+     * write a visit to flash at all, which matters now that acknowledging
+     * makes flash the only copy. */
+    pk_nvs_save_visits(g_core.visit, g_core.visit_n);
+
     ESP_LOGI(TAG, "Gateway initialized. Entering 5-minute main loop...");
 
     // Wait full poll interval before second poll (fountain stops advertising right after disconnect)
@@ -246,10 +262,12 @@ void app_main(void) {
         now = (uint32_t)time(NULL);
 
         if (ok) {
-            ESP_LOGI(TAG, "Poll OK: power=%d pump=%d batt=%d%% filter=%d%% new_visits=%d",
+            ESP_LOGI(TAG, "Poll OK: power=%d pump=%d batt=%d%% filter=%d%% new_visits=%d%s",
                      s_ble_res.state.power, s_ble_res.state.pump_running, s_ble_res.state.battery_pct,
-                     s_ble_res.state.filter_pct, s_ble_res.visit_count);
-            pk_poll_ok(&g_core, &s_ble_res.state, s_ble_res.visits, s_ble_res.visit_count, now);
+                     s_ble_res.state.filter_pct, s_ble_res.visit_count,
+                     s_ble_res.hist_short ? " SHORT" : "");
+            pk_poll_ok(&g_core, &s_ble_res.state, s_ble_res.visits, s_ble_res.visit_count,
+                       s_ble_res.hist_short ? PK_HIST_SHORT : PK_HIST_OK, now);
         } else {
             ESP_LOGW(TAG, "Poll failed: %s", s_ble_res.error);
             pk_poll_fail(&g_core, now);
@@ -299,6 +317,12 @@ void app_main(void) {
             }
         }
         pk_msg_clear(&g_core);
+
+        /* Persist the visit list. The fountain's buffer is a recovery aid,
+         * not storage: the phone app can drain it at any moment, and a power
+         * cut like the one on 29.08.2026 must not be able to lose a day.
+         * This is a no-op on the cycles where nothing changed. */
+        pk_nvs_save_visits(g_core.visit, g_core.visit_n);
 
         /* Re-sync the clock twice a day. The RTC drifts, and this gateway is
          * meant to run for months without anyone touching it; left alone the

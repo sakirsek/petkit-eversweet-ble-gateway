@@ -607,6 +607,115 @@ eq("a slower poll waits proportionally longer, not a fixed amount", m, [])
 m = run(core20, Fountain(DRY_ONLY), T(19, 16, 18, 40), T(19, 16, 18, 40), step=900)
 eq("and then it reports", len(m), 1)
 
+print("\n=== 22. A SHORT HISTORY READ IS NOT A DRY CAT ===")
+# 29.08.2026, live. The fountain hands over one 512-byte chunk - 85 whole
+# records - and then asks for a CMD 67 acknowledgement every three seconds and
+# sends nothing more until it gets one. This gateway never answered, so it
+# worked perfectly up to 85 unread records and then froze on that same chunk.
+#
+# The feed stopped at 28.08 23:21. The cat drank normally all day on the 29th
+# and none of it arrived. An 8-hour thirst alarm went out at 07:28, a 12-hour
+# one at 11:28, and the daily summary for the 29th said "No drinks recorded
+# today." Every one of those was confident and wrong.
+#
+# CMD 212 had been announcing the true byte count the whole time. Nothing
+# compared it against what actually arrived. These tests pin the comparison.
+
+class ChunkedFountain(Fountain):
+    """A fountain that stops at CHUNK records until it is acknowledged."""
+    CHUNK = 85
+
+    def replay(self, now):
+        return super().replay(now)[:self.CHUNK]
+
+    def short(self, now):
+        return len(super().replay(now)) > self.CHUNK
+
+
+def run_chunked(core, fnt, start, end, step=300):
+    """Like run(), but the transport reports whether it got everything."""
+    out, t = [], start
+    while t <= end:
+        hist = pk.HIST_SHORT if fnt.short(t) else pk.HIST_OK
+        core.poll_ok(healthy, fnt.replay(t), t, hist)
+        core.tick(t)
+        out += core.take()
+        t += step
+    return out
+
+
+blind_cfg = pk.default_cfg()
+blind_cfg.thirst_sec = 8 * 3600
+blind_cfg.thirst_escalate_sec = 12 * 3600
+blind_cfg.normal_gap_sec = 416 * 60
+
+# 85 records, the last at 23:21 on the 28th - exactly the real backlog, which
+# was 8 + 15 + 18 + 17 + 15 + 12 records across 23-28 August.
+backlog = [(T(28, 23, 21) - (84 - i) * 600, 30) for i in range(85)]
+day29 = [(T(29, 6, 0), 45), (T(29, 12, 0), 50), (T(29, 18, 0), 55)]
+frozen = ChunkedFountain(backlog + day29)
+
+core21 = pk.Core(blind_cfg, T(28, 23, 58))
+core21.poll_ok(healthy, frozen.replay(T(28, 23, 58)), T(28, 23, 58), pk.HIST_OK)
+core21.drop()
+eq("the feed starts healthy, at the record it really froze on",
+   core21.last_drink_ts, T(28, 23, 21))
+
+msgs = run_chunked(core21, frozen, T(29, 0, 3), T(29, 23, 58))
+eq("nothing new ever arrives, exactly as on the day",
+   core21.last_drink_ts, T(28, 23, 21))
+eq("but no thirst alarm is raised about it",
+   [m for m in msgs if "has not drunk" in m], [])
+eq("the gateway reports its own blindness instead, once",
+   len([m for m in msgs if "cannot read the drinking history" in m]), 1)
+ok("and it says what will clear it",
+   "Opening the PetKit app" in
+   [m for m in msgs if "cannot read" in m][0])
+
+# The report for the 29th, emitted just after midnight on the 30th.
+rep = [m for m in run_chunked(core21, frozen, T(30, 0, 3), T(30, 0, 3))
+       if "Daily summary" in m]
+eq("one report for the 29th", len(rep), 1)
+ok("it does not call an unread day a dry one",
+   "No drinks recorded today" not in rep[0])
+ok("it says the reading was broken instead",
+   "not reading properly" in rep[0])
+# Once the flow control is answered the whole backlog arrives again.
+drained = ChunkedFountain(day29 + [(T(30, 1, 0), 40)])
+back = run_chunked(core21, drained, T(30, 0, 8), T(30, 1, 8))
+eq("it says when it can see again",
+   len([m for m in back if "readable again" in m]), 1)
+eq("and the day it could not read is recovered from the buffer",
+   core21.last_drink_ts, T(30, 1, 0))
+
+# A short read must not establish the baseline either. Doing so would anchor
+# last_drink_ts to the oldest record the fountain still happens to be holding
+# and then count hours from it.
+core22 = pk.Core(blind_cfg, T(29, 0, 0))
+seen, t = [], T(29, 0, 0)
+while t <= T(29, 20, 0):
+    core22.poll_ok(healthy, [(T(28, 10, 0), 30)], t, pk.HIST_SHORT)
+    core22.tick(t)
+    seen += core22.take()
+    t += 300
+eq("a feed that was never healthy raises no thirst alarm at all",
+   [m for m in seen if "has not drunk" in m], [])
+
+# One short read is a dropped packet, not a diagnosis. Only a run of them is.
+core23 = pk.Core(blind_cfg, T(29, 0, 0))
+core23.poll_ok(healthy, [(T(28, 23, 21), 26)], T(29, 0, 0), pk.HIST_OK)
+core23.drop()
+one, t = [], T(29, 0, 5)
+for _ in range(2):
+    core23.poll_ok(healthy, [(T(28, 23, 21), 26)], t, pk.HIST_SHORT)
+    core23.tick(t); one += core23.take(); t += 300
+eq("two short reads say nothing",
+   [m for m in one if "cannot read" in m], [])
+core23.poll_ok(healthy, [(T(28, 23, 21), 26)], t, pk.HIST_SHORT)
+core23.tick(t)
+eq("the third speaks",
+   len([m for m in core23.take() if "cannot read" in m]), 1)
+
 print("\n" + "=" * 60)
 print("RESULT: %d passed, %d failed" % (PASS, FAIL))
 sys.exit(1 if FAIL else 0)

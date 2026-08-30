@@ -40,11 +40,23 @@
  * See check_thirst - this is why the thirst threshold carries a grace. */
 #define PK_RECORD_LAG_SEC 120
 
+/* Outcome of one history read, reported by the platform layer.
+ *
+ * CMD 212 tells us exactly how many bytes are waiting, so "did I get all of
+ * them" is a question with an exact answer, and the core is entitled to it.
+ * Without this, n == 0 meant both "the cat did not drink" and "I am blind",
+ * and on 29.08.2026 the gateway spent a whole day confidently reporting the
+ * first while living the second. See check_history. */
+enum {
+    PK_HIST_OK    = 0,  /* received every byte CMD 212 said was pending */
+    PK_HIST_SHORT = 1   /* pending > 0 and we got fewer bytes than that */
+};
+
 /* ---------------------------------------------------------------- commands */
 enum {
     PK_CMD_AUTH      = 86,   /* verify secret        -> reply 01 = accepted  */
     PK_CMD_STREAM    = 68,   /* history stream data  (FA FC FE header!)      */
-    PK_CMD_STREAMACK = 67,   /* stream chunk ack     - NEVER SEND (consumes) */
+    PK_CMD_STREAMACK = 67,   /* chunk ack - FLOW CONTROL, does NOT consume   */
     PK_CMD_STREAMEND = 69,   /* stream end ack       - NEVER SEND (consumes) */
     PK_CMD_STREAMSET = 80,   /* stream settings      -> THIS starts the flow */
     PK_CMD_STATE     = 210,  /* running state                                */
@@ -90,11 +102,17 @@ typedef struct {
     uint16_t sec;    /* duration in seconds */
 } pk_visit_t;
 
-/* NOTE on the visit list: because we never acknowledge the stream, the device
- * replays its entire buffer on every poll - including records from previous
- * days. The list is therefore a rolling multi-day window, deduplicated on
- * timestamp, and the daily report filters it by civil day. Do not "clear it
- * at midnight": the records are simply re-added on the next poll. */
+/* NOTE on the visit list: the fountain replays every UNACKNOWLEDGED record on
+ * every poll, so the list is a rolling multi-day window, deduplicated on
+ * timestamp, and the daily report filters it by civil day. Do not "clear it at
+ * midnight": anything still unacknowledged is re-added on the next poll.
+ *
+ * But do not treat the fountain as storage either. It hands over one 512-byte
+ * chunk - 85 whole records - and then waits for a CMD 67 before sending any
+ * more, so the transport has to answer that flow control or the feed freezes
+ * at 85. The phone app can also drain the buffer at any moment. The list is
+ * therefore persisted by the platform layer rather than rebuilt from the
+ * fountain on every restart. */
 
 /* ------------------------------------------------------------------ config */
 typedef struct {
@@ -129,6 +147,15 @@ typedef struct {
     int        visit_n;
     uint32_t   last_drink_ts;      /* 0 = not known yet */
     uint8_t    baseline_ready;     /* no thirst alarm until history read once */
+
+    /* history-read health. The fountain hands over at most one 512-byte chunk
+     * (85 whole records) until the reader acknowledges it, so a gateway that
+     * never acknowledges goes silently blind the moment the backlog passes 85.
+     * Measured on 29.08.2026: 85 records read fine, the 86th froze the feed
+     * for 28 hours. These three fields are what makes that loud instead. */
+    uint8_t    hist_short_streak;  /* consecutive short reads               */
+    uint8_t    a_hist_blind;       /* latch - the "I cannot read it" alarm  */
+    uint8_t    day_hist_short;     /* any short read today -> report says so */
 
     /* alarm latches - each fires once, rearms when the condition clears */
     uint8_t  a_no_water, a_fault;
@@ -172,9 +199,10 @@ PK_API int  pk_history_decode(const uint8_t *buf, int n, pk_visit_t *out, int ma
 /* Pending byte count from a CMD 212 reply. -1 if undecodable. */
 PK_API int32_t pk_sync_pending(const uint8_t *pl, int n);
 
-/* Successful poll: current state plus any newly fetched history records. */
+/* Successful poll. `hist` is PK_HIST_OK or PK_HIST_SHORT and is NOT optional:
+ * it is the difference between "no drinks" and "I could not read the drinks". */
 PK_API void pk_poll_ok(pk_t *p, const pk_state_t *s,
-                       const pk_visit_t *fresh, int n, uint32_t now);
+                       const pk_visit_t *fresh, int n, int hist, uint32_t now);
 PK_API void pk_poll_fail(pk_t *p, uint32_t now);
 /* Time-driven checks: thirst alarm, daily report, unreachable detection.
  * pk_tick is the SOLE owner of the day boundary - it must be called after
