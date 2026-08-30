@@ -33,8 +33,14 @@ Read this part. It will save you the disappointment.
   all. In practice this is fine (the gateway holds the radio for a few seconds
   every five minutes) but you cannot sit in the app and expect polling to work.
 - **This project is read-only by design.** It never changes a setting, never
-  turns the pump on or off, and never acknowledges the history stream, so the
-  PetKit app keeps working normally alongside it.
+  turns the pump on or off, and never consumes a history record. It does answer
+  the history stream's flow control (`CMD 67`), because the fountain hands over
+  one 512-byte chunk of 85 records and then refuses to send more until it is
+  answered, so a reader that stays silent goes blind once the backlog passes
+  85. Answering costs nothing: measured, the pending counter does not move.
+  `CMD 69` is what retires records and this gateway never sends it, so the
+  PetKit app keeps its full history. See
+  [Reading the drinking history](docs/protocol.md#reading-the-drinking-history).
 
 ---
 
@@ -88,7 +94,7 @@ never left wondering whether something resolved itself:
 
 <img src="docs/images/alerts.jpg" width="420" alt="Telegram messages: water empty and refilled, a device fault, the fountain becoming unreachable and coming back with the outage length, and filter and battery threshold warnings">
 
-That is the complete set. Twelve message types, and on a normal day you get
+That is the complete set. Fourteen message types, and on a normal day you get
 exactly one of them: the summary.
 
 ### Try it with no fountain, no phone and no bot
@@ -141,7 +147,7 @@ Then:
 
 ```bash
 pip install -r requirements.txt   # bleak, for the BLE transport
-python test_core.py               # 128 regression tests, all must pass
+python test_core.py               # 141 regression tests, all must pass
 python petkit_pc.py --once        # single poll, print result, exit
 python petkit_pc.py               # run the gateway
 ```
@@ -207,10 +213,16 @@ that nothing outside the read-only set can go out even by accident
 | Command | What it does |
 |---:|---|
 | **73** | Permanently rewrites deviceId + secret. **Can lock the official app out of your own fountain.** Only a physical factory reset undoes it. |
-| **67, 69** | History-stream acknowledgements. The device marks records synced and the app can never display them again. |
+| **69** | Stream **end** acknowledgement. This is the one that retires records so the app can never show them again. Never sent here. |
+
+`CMD 67` is the one frame that leaves this whitelist, from `send_chunk_ack()`,
+and only when a read comes back short. It is the stream's flow control rather
+than a cleanup command, and there is no way past 85 unread records without it.
+Answering it consumes nothing: the pending counter was read either side of
+three acknowledgements on the same connection and did not move.
 
 If you build your own tool from [docs/protocol.md](docs/protocol.md), please
-keep both of those rules.
+keep the rest of those rules.
 
 ---
 
@@ -224,7 +236,7 @@ core/Makefile            Builds the core on Linux, macOS and the Pi
 core/build.bat           Builds the core on Windows (MSVC, found via vswhere)
 pk.py                    ctypes bindings (pk_t kept opaque via pk_sizeof)
 petkit_pc.py             PC driver: BLE (bleak) + Telegram + clock + logging
-test_core.py             128 regression tests, all from live measurements
+test_core.py             141 regression tests, all from live measurements
 preview_messages.py      Sends every message type to Telegram for review
 replay_logs.py           Replays a recorded run through the core
 tools/demo.py            Replays data/ through the core. No hardware needed
@@ -320,12 +332,15 @@ passing through `msg()`, and the report is read before it counts itself, so
 "messages" would have been short by one on every day the gateway rebooted.
 Name the number after what it can actually count.
 
-**Do not clear the visit list at midnight.** Since we never acknowledge, the
-device replays its whole buffer on the next poll and cleared records come
-straight back, counted as today's. The list is a rolling multi-day window
-instead, pruned at 48 h, and the report filters it by civil day. The upside is
-free restart recovery: a gateway restarted at noon still produces a complete
-report for that day, **as long as nothing else has drained the buffer first.**
+**Do not clear the visit list at midnight.** The device replays every
+unacknowledged record on the next poll, so cleared records come straight back
+and get counted as today's. The list is a rolling multi-day window instead,
+pruned at 48 h, and the report filters it by civil day. It is also written to
+NVS every cycle, because the fountain's buffer is a recovery aid rather than
+storage: the phone app drains it whenever it syncs, and a power cut must not
+be able to lose a day. The upside is free restart recovery: a
+gateway restarted at noon still produces a complete report for that day,
+**as long as nothing else has drained the buffer first.**
 The phone app acks when it syncs, which consumes those records for everyone.
 See "The buffer is shared" in [docs/protocol.md](docs/protocol.md). The real
 fix is for the gateway to persist its own visit list, which it does not do yet.
@@ -355,7 +370,7 @@ Measured on a real phone; regressing these makes the messages worse.
 
 ## Status
 
-**Verified.** The core passes 128 regression tests, every expected value taken
+**Verified.** The core passes 141 regression tests, every expected value taken
 from live captures. The daily visit count and durations reproduce the vendor
 app's own history screen exactly, for every record the fountain still offers.
 A first 18 h 37 min unattended run polled

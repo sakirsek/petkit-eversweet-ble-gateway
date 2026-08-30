@@ -147,26 +147,87 @@ Verified live: `6a857feb 003d` → 2026-08-19 13:05:31, 61 seconds.
 The `CMD 212` reply payload is `status(1) | BE32 pending`. Reading the count
 from offset 0 yields nonsense like 16777216. This mistake was made here.
 
-### ⚠️ Never acknowledge, and why that is the useful part
+### ⚠️ `CMD 67` is flow control, not cleanup, and it has a hard ceiling
 
-The app follows a read with `CMD 67` and `CMD 69`, which tell the fountain the
-records are synced. After that the counter drops to zero and **the app itself
-can never show those records again.** Measured: 3 records pulled with acks, and
-the second query returned a count of 0.
+This section used to say that a reader which never acknowledges gets the
+records **in full**, indefinitely. That is false, and the way it is false is
+expensive. Corrected 30 Aug 2026 after it cost a day of drinking history.
 
-**If you never send the acks, nothing is consumed.** The records are returned in
-full, the pending counter stays exactly where it was, and the phone app still
-displays the history. Measured and confirmed on the device.
+The fountain streams **one 512-byte chunk** and then stops. 512 bytes holds
+exactly **85 whole 6-byte records** (510 bytes; the remaining 2 do not fit a
+record). Having sent that chunk it emits a `CMD 67` **request** every three
+seconds and sends nothing further until it is answered:
 
-The consequence is that a third-party reader can run **alongside** the official
-app instead of cannibalising it. The cost is that the fountain replays its whole
-buffer on every poll, so the reader has to deduplicate on timestamp, a cheap
-price. Any tool built on this protocol should read without acking.
+```
+fa fc fe 44 03 00 01 30 00 <48 bytes = 8 records> fb   stream packet
+fa fc fd 43 01 d8 00 00 fb                             cmd 67, typ 1 (REQUEST), seq 216
+fa fc fd 43 01 d8 00 00 fb                             again, 3 s later
+fa fc fd 43 01 d8 00 00 fb                             and again, forever
+```
 
-A pleasant side effect: because the device keeps the buffer, a gateway restarted
-at noon still reconstructs the whole morning. On 22 Aug 2026 a board that had
-rebooted at 16:09 produced a complete report going back to 04:15, entirely from
-the fountain's own buffer.
+So a reader that never acknowledges works **perfectly up to 85 unread records
+and then freezes on that same chunk permanently.** Every subsequent poll
+returns the identical oldest 85, all of them already known, so a
+deduplicating reader sees nothing new ever again. It does not error, it does
+not warn, and 510 is a multiple of 6, so an integrity check on the record
+boundary passes.
+
+Measured on this fountain across 23-29 Aug 2026. The backlog since the app's
+last sync was 8 + 15 + 18 + 17 + 15 + 12 = **85 records at 23:21 on the 28th,
+read perfectly.** The 86th record, the cat's first drink on the 29th, arrived
+and the feed died on the spot. It stayed dead for 28 hours, through two false
+thirst alarms and a daily summary that said "No drinks recorded today", until
+the phone app synced and cleared the backlog.
+
+The reply the fountain wants is an ordinary reply frame: `typ` 2, echoing its
+seq. This project sends `fa fc fd 43 02 <seq> 01 00 01 fb`.
+
+### `CMD 67` does not consume. `CMD 69` is the one that does
+
+This was measured rather than assumed, because the difference decides whether
+a third-party reader can coexist with the phone app at all. The pending
+counter was read on the **same connection** before and after three
+acknowledgements:
+
+```
+pending BEFORE: 48 bytes (8 records)
+  cmd=68 typ=3 seq=0   len=48     the chunk
+  cmd=67 typ=1 seq=241 len=0      "acknowledge me"
+  -> our reply, seq 241
+  cmd=82 typ=3 seq=0   len=48     tail marker, same 48 bytes again
+  cmd=67 typ=1 seq=242 len=0      seq advanced, so it accepted the reply
+  -> our reply, seq 242
+  cmd=67 typ=1 seq=243 len=0
+pending AFTER : 48 bytes
+```
+
+The seq advancing (241, 242, 243) shows the fountain accepted each reply
+rather than ignoring a malformed frame, and the counter did not move. So
+answering the flow control is free. What retires records is `CMD 69`, the
+stream **end** acknowledgement: the app sends it and the count then drops to
+zero, measured separately with 3 records.
+
+A reader can therefore have both: answer `CMD 67` to get past 85 records,
+never send `CMD 69`, and the phone app keeps its entire history.
+
+`CMD 82` appears once the stream is exhausted and repeats the last chunk. Do
+not add it to your byte total or you will double-count against `CMD 212`.
+
+### What this means for anyone building on the protocol
+
+1. **Check `CMD 212` against what arrived.** It gives you an exact expected
+   byte count. Comparing it is the difference between "the cat did not drink"
+   and "I was not shown the drinks", and nothing else in the protocol will
+   tell you which one you are looking at.
+2. **Answer `CMD 67` when, and only when, the read is short.** On a normal day
+   the whole backlog is one chunk and no reply is needed at all.
+3. **Persist what you read.** Not because acknowledging destroys it, but
+   because the phone app's own sync does: it sends `CMD 69` and those records
+   leave the unsynced stream for everyone.
+
+The buffer is still a useful recovery aid: on 22 Aug 2026 a board that had
+rebooted at 16:09 rebuilt a complete report back to 04:15 from it. Just do not
+mistake that for storage.
 
 ### The buffer is shared, and the phone app does drain it
 
